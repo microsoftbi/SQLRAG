@@ -1,0 +1,64 @@
+# Environment variables (contains sensitive info)
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+llm_sql_logs.log
+logs/
+
+# Node / Vue
+node_modules/
+dist/
+.npm
+.yarn
+.eslintcache
+.stylelintcache
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Test / Debug
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Backend specific
+backend/__pycache__/
+backend/*.pyc
+frontend/src/assets/*.local
+
+# Output files
+qa_output*.txt
+test_output.txt

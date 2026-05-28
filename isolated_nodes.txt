@@ -1,0 +1,33 @@
+Total nodes: 109
+Connected nodes: 81
+Isolated nodes: 28
+
+Isolated nodes:
+1. [Event] '方超刘直乔装抢劫金店'
+2. [Event] '李茜假扮物业试探刘背'
+3. [Event] '宋星被方超刘直扔下楼'
+4. [Event] '朗博图承认杀害叶剑'
+5. [Event] '方庸被纪委带走'
+6. [Event] '刚哥小毛抢走路虎和美元'
+7. [Event] '朱亦飞坠崖身亡'
+8. [Event] '朗博文带刀车撞死叶剑(伪供)'
+9. [Event] '周荣庄园枪战'
+10. [Event] '周荣自虐冲进鱼缸'
+11. [Event] '陆一波寄出举报信'
+12. [Event] '张一昂被调离刑侦一线'
+13. [Event] '刘背偷编钟离开'
+14. [Event] '霍正假装病人被注射青霉素'
+15. [Item] '手枪'
+16. [Item] '梅东钱箱'
+17. [Item] '化粪池引爆装置'
+18. [Item] '黑色出租车(改装夏利)'
+19. [Location] '枫林晚酒店'
+20. [Location] '废品回收站'
+21. [Location] '荣城集团大楼'
+22. [Location] '东部新城'
+23. [Location] '三江口长途汽车站'
+24. [Location] '涵洞'
+25. [Organization] '枫林晚酒店'
+26. [Organization] '三江口日报'
+27. [Organization] '朱亦飞文物贩卖团伙'
+28. [Person] '小飞'
