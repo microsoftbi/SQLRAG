@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     user: str = os.getenv("USER", "sa")
     password: str = os.getenv("PASSWORD", "Passw0rd")
     backend_port: int = int(os.getenv("BACKEND_PORT", "8798"))
+
+    # 分块配置
+    chunk_size: int = int(os.getenv("CHUNK_SIZE", "1000"))
+    chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", "200"))
+
+    # Embedding 配置
+    embedding_model: str = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+    ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     
     # LLM配置
     llm_api_key: str = os.getenv("LLM_API_KEY", "")

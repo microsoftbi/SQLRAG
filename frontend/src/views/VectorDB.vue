@@ -91,8 +91,8 @@
               </el-table-column>
               <el-table-column prop="status" label="状态" width="120">
                 <template #default="{ row }">
-                  <el-tag :type="row.status === 'success' ? 'success' : 'danger'">
-                    {{ row.status === 'success' ? '成功' : '失败' }}
+                  <el-tag :type="row.status === 'success' ? 'success' : row.status === 'pending' ? 'warning' : 'danger'">
+                    {{ row.status === 'success' ? '成功' : row.status === 'pending' ? '处理中...' : '失败' }}
                   </el-tag>
                 </template>
               </el-table-column>
@@ -122,12 +122,12 @@
             </el-card>
             
             <div v-if="sources.length > 0" style="margin-top: 20px">
-              <el-divider content-position="left">参考来源</el-divider>
+              <el-divider content-position="left">召回内容</el-divider>
               <el-card>
                 <el-timeline>
                   <el-timeline-item v-for="(source, idx) in sources" :key="idx">
                     <div><strong>{{ source.Title || '来源 ' + (idx + 1) }}</strong></div>
-                    <div style="color: #666; font-size: 14px; margin-top: 8px">{{ source.Content }}</div>
+                    <div style="color: #666; font-size: 14px; margin-top: 8px; white-space: pre-wrap">{{ source.ChunkText }}</div>
                   </el-timeline-item>
                 </el-timeline>
               </el-card>
@@ -193,30 +193,36 @@ const showChunks = async (doc) => {
 
 const handleFileUpload = async (file) => {
   uploadLoading.value = true
-  
+
   const fileItem = {
     name: file.name,
     size: file.size,
     status: 'pending'
   }
   uploadedFiles.value.push(fileItem)
-  
+  const fileIndex = uploadedFiles.value.length - 1
+
   const formData = new FormData()
   formData.append('file', file)
-  
+
   try {
-    await axios.post('http://localhost:8798/vector/documents/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data'
-      }
-    })
-    fileItem.status = 'success'
-    loadDocuments()
+    await axios.post('http://localhost:8798/vector/documents/upload', formData)
+    uploadedFiles.value[fileIndex].status = 'success'
   } catch (error) {
-    console.error('Error uploading document:', error)
-    fileItem.status = 'error'
+    console.error('Upload request failed, will retry check after 10s:', error)
+    // 等 10 秒后重新加载文档列表，确认是否实际上传成功
+    setTimeout(async () => {
+      try {
+        const res = await axios.get('http://localhost:8798/vector/documents')
+        const found = res.data.documents.some(d => d.Title === file.name)
+        uploadedFiles.value[fileIndex].status = found ? 'success' : 'error'
+      } catch {
+        uploadedFiles.value[fileIndex].status = 'error'
+      }
+    }, 10000)
   } finally {
     uploadLoading.value = false
+    loadDocuments()
   }
   return false
 }

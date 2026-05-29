@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd //c \"start.bat\")",
+      "Bash(cmd.exe /c \"start.bat\")",
+      "Bash(cmd.exe /c \"c:\\\\Users\\\\TEMP\\\\Desktop\\\\SQLRAG\\\\start.bat\")",
+      "Bash(pip install *)",
+      "Bash(npm install *)",
+      "Bash(python main.py)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8798/)",
+      "Bash(cmd.exe /c \"where python\")",
+      "Read(//c/Users/TEMP/AppData/Local/Programs/**)",
+      "Bash(ls /c/Python*/python.exe)",
+      "Bash(cmd.exe /c \"python --version\")",
+      "Bash(cmd.exe /c \"python main.py\")",
+      "Bash(cmd.exe /c \"npm run dev\")",
+      "Bash(cmd.exe //c \"cd c:\\\\Users\\\\TEMP\\\\Desktop\\\\SQLRAG\\\\backend && python fix_upload_and_chunk.py\")",
+      "Bash(cmd.exe //c \"cd c:\\\\Users\\\\TEMP\\\\Desktop\\\\SQLRAG\\\\backend && python -X utf8 -c \\\\\"with open\\('main.py', 'r', encoding='utf-8'\\) as f: lines = f.readlines\\(\\); print\\([repr\\(l\\) for l in lines[418:426]]\\)\\\\\"\")",
+      "Bash(cmd.exe //c \"cd c:\\\\Users\\\\TEMP\\\\Desktop\\\\SQLRAG\\\\backend && python debug_lines.py\")",
+      "Bash(cmd.exe //c \"cd c:\\\\Users\\\\TEMP\\\\Desktop\\\\SQLRAG\\\\backend && python main.py\")",
+      "Bash(cmd.exe //c \"netstat -ano | findstr :8798\")",
+      "Bash(cmd.exe //c \"taskkill /F /PID 30196\")",
+      "Bash(cmd.exe //c \"echo 这是一个测试文档内容，用于验证上传功能是否正常。 > C:\\\\Users\\\\TEMP\\\\Desktop\\\\SQLRAG\\\\test_upload.txt && cd c:\\\\Users\\\\TEMP\\\\Desktop\\\\SQLRAG && curl -s -X POST http://localhost:8798/vector/documents/upload -F \\\\\"file=@test_upload.txt\\\\\"\")",
+      "Bash(curl -s http://localhost:8798/)",
+      "Bash(cmd.exe //c \"cd c:\\\\Users\\\\TEMP\\\\Desktop\\\\SQLRAG\\\\backend && python test_upload_fix.py\")",
+      "Bash(cmd.exe //c \"cd c:\\\\Users\\\\TEMP\\\\Desktop\\\\SQLRAG\\\\backend && python -c \\\\\"import urllib.request, json; resp = urllib.request.urlopen\\('http://localhost:8798/'\\); print\\(resp.status, resp.read\\(\\).decode\\(\\)\\)\\\\\"\")",
+      "Bash(cmd.exe //c \"type C:\\\\Users\\\\TEMP\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-TEMP-Desktop-SQLRAG\\\\903b9a13-d4ca-48ce-8590-56c5d80d4d0a\\\\tasks\\\\bnyy0uyn1.output\")",
+      "Bash(cmd.exe //c \"netstat -ano | findstr :8798 | findstr LISTENING\")"
+    ]
+  }
+}

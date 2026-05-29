@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import pyodbc
 import json
 import os
@@ -7,15 +8,28 @@ import re
 import logging
 from datetime import datetime
 from typing import List, Dict, Any
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from config import settings
 from database import get_graph_db_connection, get_vector_db_connection
 
+# 获取当前脚本所在目录，确保日志文件在 backend 目录下
+_log_dir = os.path.dirname(os.path.abspath(__file__))
+_log_path = os.path.join(_log_dir, 'llm_sql_logs.log')
+
 logging.basicConfig(
-    filename='llm_sql_logs.log',
+    filename=_log_path,
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     encoding='utf-8'
 )
+
+# 同时输出到控制台，方便实时查看
+_console = logging.StreamHandler()
+_console.setLevel(logging.DEBUG)
+_console.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logging.getLogger('').addHandler(_console)
+
+print(f"日志文件路径: {_log_path}")
 
 def log_llm_interaction(question: str, sql: str):
     """记录LLM交互日志"""
@@ -24,6 +38,10 @@ def log_llm_interaction(question: str, sql: str):
     logging.info("-" * 80)
 
 app = FastAPI(title="SQLRAG API")
+
+logging.info("SQLRAG API 启动成功")
+logging.info(f"Embedding 模型: {settings.embedding_model}")
+logging.info(f"Ollama 地址: {settings.ollama_base_url}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -336,41 +354,175 @@ async def get_document_chunks(document_id: int, conn=Depends(get_vector_db_conne
 
 
 def create_chunks_from_content(document_id: int, content: str, conn) -> List[Dict]:
-    """从文档内容创建分块"""
+    """使用 LangChain RecursiveCharacterTextSplitter 创建分块"""
     if not content:
         return []
-    
-    # 简单分块：每500字符一块，带重叠
-    chunk_size = 500
-    overlap = 100
+
+    # 使用 LangChain 的递归字符文本分割器
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=settings.chunk_size,
+        chunk_overlap=settings.chunk_overlap,
+        add_start_index=True,
+        separators=["\n\n", "\n", "。", "！", "？", " ", ""],
+    )
+
+    # LangChain 的 split_text 返回 str 列表
+    texts = text_splitter.split_text(content)
     chunks = []
-    
-    idx = 0
-    i = 0
-    while idx < len(content):
-        end_idx = min(idx + chunk_size, len(content))
-        chunk_text = content[idx:end_idx]
-        
+
+    for i, chunk_text in enumerate(texts):
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO TextChunks (DocumentId, ChunkIndex, ChunkText, CreatedAt) VALUES (?, ?, ?, GETDATE())",
             (document_id, i, chunk_text)
         )
         conn.commit()
-        
+
+        # 获取新插入的Chunk ID
+        cursor.execute("SELECT IDENT_CURRENT('TextChunks')")
+        row = cursor.fetchone()
+        chunk_id = int(row[0]) if row and row[0] is not None else None
+
         chunks.append({
-            "ChunkId": cursor.lastrowid,
+            "ChunkId": chunk_id,
             "DocumentId": document_id,
             "ChunkIndex": i,
             "ChunkText": chunk_text,
             "CreatedAt": None
         })
-        
-        i += 1
-        idx = end_idx - overlap
-    
+
     logging.info(f"Created {len(chunks)} chunks for document {document_id}")
     return chunks
+
+
+def get_embedding(text: str) -> List[float]:
+    """调用 Ollama /api/embeddings 获取文本的嵌入向量"""
+    if not text or not text.strip():
+        raise Exception("不能为空文本生成嵌入向量")
+
+    try:
+        import urllib.request
+        import json
+
+        url = f"{settings.ollama_base_url.rstrip('/')}/api/embeddings"
+        payload = json.dumps({
+            "model": settings.embedding_model,
+            "prompt": text,
+        }).encode()
+
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json"}
+        )
+
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read())
+
+        vector = data.get("embedding", [])
+        if not vector:
+            raise Exception("Ollama 返回了空的嵌入向量")
+
+        return vector
+    except urllib.request.HTTPError as e:
+        error_body = e.read().decode()
+        logging.error(f"Ollama HTTP error {e.code}: {error_body}")
+        raise Exception(f"Ollama 返回错误 ({e.code}): {error_body}")
+    except urllib.request.URLError:
+        logging.error(f"Cannot connect to Ollama at {settings.ollama_base_url}")
+        raise Exception(f"无法连接到 Ollama，请确保 Ollama 已启动（{settings.ollama_base_url}）")
+    except Exception as e:
+        logging.error(f"Embedding error: {e}")
+        raise
+
+
+def embed_chunks_for_document(document_id: int, conn) -> Dict:
+    """为指定文档的所有未嵌入分块生成向量并存入 VectorIndex"""
+    cursor = conn.cursor()
+
+    # 查询还没有嵌入向量的分块
+    cursor.execute("""
+        SELECT c.ChunkId, c.ChunkText
+        FROM TextChunks c
+        LEFT JOIN VectorIndex v ON c.ChunkId = v.ChunkId
+        WHERE c.DocumentId = ? AND c.IsDeleted = 0 AND v.ChunkId IS NULL
+        ORDER BY c.ChunkIndex
+    """, (document_id,))
+    rows = cursor.fetchall()
+
+    if not rows:
+        return {"message": "所有分块已嵌入，无需重复处理", "embedded": 0}
+
+    # VECTOR INDEX 会阻塞 INSERT，先删除，插入完成后重建
+    cursor.execute("DROP INDEX IF EXISTS idx_content_vector ON VectorIndex")
+    conn.commit()
+
+    embedded_count = 0
+    for chunk_id, chunk_text in rows:
+        if not chunk_text or not chunk_text.strip():
+            logging.warning(f"Skipping empty chunk {chunk_id}")
+            continue
+        try:
+            vector = get_embedding(chunk_text)
+            vector_json = json.dumps(vector)
+            cursor.execute("""
+                DECLARE @json_str NVARCHAR(MAX) = CONVERT(NVARCHAR(MAX), ?);
+                DECLARE @v VECTOR(768) = CAST(@json_str AS VECTOR(768));
+                INSERT INTO VectorIndex (ChunkId, EmbeddingVector, CreatedAt)
+                VALUES (?, @v, GETDATE());
+            """, (vector_json, chunk_id))
+            conn.commit()
+            embedded_count += 1
+            logging.info(f"Embedded chunk {chunk_id} for document {document_id}")
+        except Exception as e:
+            logging.error(f"Failed to embed chunk {chunk_id}: {e}")
+            conn.rollback()
+            raise
+
+    # 重建 VECTOR INDEX（必须在一个独立的 autocommit 连接中执行）
+    try:
+        from config import get_db_connection_string
+        rebuild_conn = pyodbc.connect(get_db_connection_string("VectorDB"), autocommit=True)
+        rebuild_cursor = rebuild_conn.cursor()
+        rebuild_cursor.execute("""
+            CREATE VECTOR INDEX idx_content_vector
+            ON dbo.VectorIndex(EmbeddingVector)
+            WITH (METRIC = 'cosine');
+        """)
+        rebuild_conn.close()
+        logging.info(f"Vector index rebuilt after inserting {embedded_count} chunks")
+    except Exception as e:
+        logging.warning(f"Vector index rebuild failed: {e}")
+
+    logging.info(f"Embedded {embedded_count} chunks for document {document_id}")
+    return {"message": f"成功嵌入 {embedded_count} 个分块", "embedded": embedded_count}
+
+
+@app.post("/vector/documents/{document_id}/embed")
+async def embed_document(document_id: int, conn=Depends(get_vector_db_connection)):
+    """为指定文档的分块生成嵌入向量"""
+    try:
+        # 先确保分块已存在
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM TextChunks WHERE DocumentId = ? AND IsDeleted = 0",
+            (document_id,)
+        )
+        chunk_count = cursor.fetchone()[0]
+
+        if chunk_count == 0:
+            # 没有分块则先创建分块
+            cursor.execute("SELECT Content FROM Documents WHERE DocumentId = ?", (document_id,))
+            doc = cursor.fetchone()
+            if not doc:
+                return JSONResponse(status_code=404, content={"message": "文档不存在"})
+            create_chunks_from_content(document_id, doc[0], conn)
+
+        result = embed_chunks_for_document(document_id, conn)
+        return result
+
+    except Exception as e:
+        logging.error(f"Error embedding document {document_id}: {e}")
+        return JSONResponse(status_code=500, content={"message": f"嵌入失败: {str(e)}"})
 
 
 @app.post("/vector/documents/upload")
@@ -411,16 +563,40 @@ async def upload_document(file: UploadFile = File(...), conn=Depends(get_vector_
             ),
         )
         conn.commit()
+
+        # 使用单独的查询获取刚插入的文档ID
+        cursor.execute("SELECT IDENT_CURRENT('Documents')")
+        row = cursor.fetchone()
+        document_id = int(row[0]) if row and row[0] is not None else None
         
-        logging.info(f"Document uploaded: {file.filename}")
+        if document_id is None or document_id == 0:
+            raise Exception("Failed to get document ID after insert")
         
-        return {"message": "Document uploaded successfully", "filename": file.filename}
+        # 立即创建分块并生成嵌入向量
+        if text_content:
+            create_chunks_from_content(document_id, text_content, conn)
+            try:
+                embed_chunks_for_document(document_id, conn)
+                logging.info(f"Auto-embedded document {document_id}")
+            except Exception as embed_err:
+                logging.warning(f"Auto-embedding failed (Ollama may not be running): {embed_err}")
+                # 嵌入失败不阻塞上传，用户可稍后手动调用 /embed 接口
+        
+        logging.info(f"Document uploaded: {file.filename}, ID: {document_id}")
+        
+        return JSONResponse(
+            status_code=200,
+            content={"message": "Document uploaded successfully", "filename": file.filename, "documentId": document_id}
+        )
     
     except Exception as e:
         logging.error(f"Error uploading document: {e}")
         import traceback
         traceback.print_exc()
-        return {"message": f"Error uploading document: {str(e)}", "error": True}
+        return JSONResponse(
+            status_code=500,
+            content={"message": f"Error uploading document: {str(e)}", "error": True}
+        )
 
 
 def extract_docx_content(file_content: bytes) -> str:
@@ -474,27 +650,30 @@ async def vector_qa(data: Dict[str, Any], conn=Depends(get_vector_db_connection)
     try:
         cursor = conn.cursor()
         
-        # 检索相关文档 (简化版：基于关键词匹配，实际项目中应该使用向量相似度搜索)
+        # 检索命中的文档块（基于关键词匹配，后续可替换为向量相似度搜索）
         cursor.execute("""
-            SELECT d.DocumentId, d.Title, d.Content, d.Source
-            FROM Documents d
-            WHERE d.IsDeleted = 0
-            AND (d.Title LIKE ? OR d.Content LIKE ? OR d.Source LIKE ?)
-            ORDER BY d.CreatedAt DESC
+            SELECT c.ChunkId, c.DocumentId, c.ChunkIndex, c.ChunkText, d.Title
+            FROM TextChunks c
+            JOIN Documents d ON c.DocumentId = d.DocumentId
+            WHERE c.IsDeleted = 0 AND d.IsDeleted = 0
+            AND c.ChunkText LIKE ?
+            ORDER BY c.DocumentId, c.ChunkIndex
             OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY
-        """, (f"%{question}%", f"%{question}%", f"%{question}%"))
+        """, (f"%{question}%",))
         
         columns = [column[0] for column in cursor.description]
         sources = [dict(zip(columns, row)) for row in cursor.fetchall()]
         
-        # 如果没有找到匹配文档，返回所有文档作为参考
+        # 如果没有命中，用关键词搜索文档标题作为备选
         if not sources:
             cursor.execute("""
-                SELECT TOP 3 d.DocumentId, d.Title, d.Content, d.Source
+                SELECT TOP 3 c.ChunkId, c.DocumentId, c.ChunkIndex, c.ChunkText, d.Title
                 FROM Documents d
-                WHERE d.IsDeleted = 0
-                ORDER BY d.CreatedAt DESC
-            """)
+                JOIN TextChunks c ON d.DocumentId = c.DocumentId
+                WHERE d.IsDeleted = 0 AND c.IsDeleted = 0
+                AND (d.Title LIKE ? OR d.Source LIKE ?)
+                ORDER BY c.DocumentId, c.ChunkIndex
+            """, (f"%{question}%", f"%{question}%"))
             columns = [column[0] for column in cursor.description]
             sources = [dict(zip(columns, row)) for row in cursor.fetchall()]
         
@@ -539,9 +718,7 @@ def generate_answer_with_sources(question: str, sources: list) -> str:
         for idx, source in enumerate(sources):
             context_text += f"\n【文档 {idx + 1}】\n"
             context_text += f"标题: {source.get('Title', '无标题')}\n"
-            context_text += f"内容: {source.get('Content', '')[:1000]}...\n"
-            if source.get('Source'):
-                context_text += f"来源: {source.get('Source')}\n"
+            context_text += f"内容: {source.get('ChunkText', '')[:1000]}...\n"
         
         prompt = f"""你是一个智能问答助手。请根据以下文档内容回答用户的问题。
 
