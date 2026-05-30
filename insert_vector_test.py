@@ -58,19 +58,48 @@ with urllib.request.urlopen(req, timeout=60) as resp:
 vector = data.get("embedding", [])
 print(f"✅ 生成向量: 维度={len(vector)}, 前3个值={vector[:3]}")
 
-# ====== 4. 插入 VectorIndexTEST 表 ======
+# ====== 4. 删除已有 VECTOR INDEX ======
+drop_sql = """
+    IF EXISTS (
+        SELECT 1
+        FROM sys.indexes
+        WHERE name = N'idx_content_vector2'
+          AND object_id = OBJECT_ID(N'dbo.VectorIndexTEST')
+    )
+    DROP INDEX [idx_content_vector2] ON [dbo].[VectorIndexTEST];
+"""
+print(f"🗑️ 删除 VECTOR INDEX:\n   {drop_sql}")
+cursor.execute(drop_sql)
+print("✅ VECTOR INDEX 已删除")
+
+# ====== 5. 插入 VectorIndexTEST 表 ======
 vector_json = json.dumps(vector)
-cursor.execute("""
+insert_sql = """
     DECLARE @json_str NVARCHAR(MAX) = CONVERT(NVARCHAR(MAX), ?);
     DECLARE @v VECTOR(768) = CAST(@json_str AS VECTOR(768));
     INSERT INTO VectorIndexTEST (ChunkId, EmbeddingVector, CreatedAt)
     VALUES (?, @v, GETDATE());
-""", (vector_json, chunk_id))
+"""
+print(f"📝 执行 INSERT SQL:\n   {insert_sql.strip()}")
+cursor.execute(insert_sql, (vector_json, chunk_id))
 conn.commit()
 
 print(f"✅ 插入 VectorIndexTEST 成功 (ChunkId={chunk_id})")
 
-# ====== 5. 验证 ======
+# ====== 6. 重新创建 VECTOR INDEX（需独立的 autocommit 连接） ======
+create_sql = """
+    CREATE VECTOR INDEX idx_content_vector2
+    ON dbo.VectorIndexTEST(EmbeddingVector)
+    WITH (METRIC = 'cosine');
+"""
+print(f"🔄 重新创建 VECTOR INDEX:\n   {create_sql.strip()}")
+rebuild_conn = pyodbc.connect(conn_str, autocommit=True)
+rebuild_cursor = rebuild_conn.cursor()
+rebuild_cursor.execute(create_sql)
+rebuild_conn.close()
+print("✅ VECTOR INDEX 已重新创建")
+
+# ====== 7. 验证 ======
 cursor.execute("SELECT TOP 5 * FROM VectorIndexTEST ORDER BY VectorId DESC")
 columns = [column[0] for column in cursor.description]
 rows = cursor.fetchall()
