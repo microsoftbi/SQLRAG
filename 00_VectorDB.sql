@@ -39,22 +39,47 @@ BEGIN
 END
 GO
 
+IF EXISTS (SELECT * FROM sys.tables WHERE name = 'KnowledgeBases')
+BEGIN
+    DROP TABLE KnowledgeBases;
+END
+GO
+
+-- ============================================
+-- 知识库表 - 用于文档分组管理
+-- ============================================
+CREATE TABLE KnowledgeBases (
+    KnowledgeBaseId BIGINT IDENTITY(1,1) PRIMARY KEY,
+    Name NVARCHAR(200) NOT NULL,
+    Description NVARCHAR(MAX) NULL,
+    CreatedAt DATETIME2 DEFAULT GETDATE(),
+    UpdatedAt DATETIME2 DEFAULT GETDATE(),
+    IsDeleted BIT DEFAULT 0
+);
+
+CREATE INDEX IX_KnowledgeBases_Name ON KnowledgeBases(Name);
+CREATE INDEX IX_KnowledgeBases_CreatedAt ON KnowledgeBases(CreatedAt);
+GO
+
 -- ============================================
 -- 文档表 - 存储原始文档
 -- ============================================
 CREATE TABLE Documents (
     DocumentId BIGINT IDENTITY(1,1) PRIMARY KEY,
+    KnowledgeBaseId BIGINT NULL,
     Title NVARCHAR(500) NOT NULL,
     Content NVARCHAR(MAX) NOT NULL,
     Source NVARCHAR(500) NULL,
     Metadata NVARCHAR(MAX) DEFAULT '{}',
     CreatedAt DATETIME2 DEFAULT GETDATE(),
     UpdatedAt DATETIME2 DEFAULT GETDATE(),
-    IsDeleted BIT DEFAULT 0
+    IsDeleted BIT DEFAULT 0,
+    FOREIGN KEY (KnowledgeBaseId) REFERENCES KnowledgeBases(KnowledgeBaseId)
 );
 
 CREATE INDEX IX_Documents_Title ON Documents(Title);
 CREATE INDEX IX_Documents_CreatedAt ON Documents(CreatedAt);
+CREATE INDEX IX_Documents_KnowledgeBaseId ON Documents(KnowledgeBaseId);
 GO
 
 -- ============================================

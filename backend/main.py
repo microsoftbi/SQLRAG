@@ -312,9 +312,24 @@ async def get_graph_data(conn=Depends(get_graph_db_connection)):
 
 
 @app.get("/vector/documents")
-async def get_documents(conn=Depends(get_vector_db_connection)):
+async def get_documents(knowledge_base_id: int = None, conn=Depends(get_vector_db_connection)):
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM Documents WHERE IsDeleted = 0")
+    if knowledge_base_id:
+        cursor.execute("""
+            SELECT d.*, kb.Name AS KnowledgeBaseName
+            FROM Documents d
+            LEFT JOIN KnowledgeBases kb ON d.KnowledgeBaseId = kb.KnowledgeBaseId
+            WHERE d.IsDeleted = 0 AND d.KnowledgeBaseId = ?
+            ORDER BY d.CreatedAt DESC
+        """, (knowledge_base_id,))
+    else:
+        cursor.execute("""
+            SELECT d.*, kb.Name AS KnowledgeBaseName
+            FROM Documents d
+            LEFT JOIN KnowledgeBases kb ON d.KnowledgeBaseId = kb.KnowledgeBaseId
+            WHERE d.IsDeleted = 0
+            ORDER BY d.CreatedAt DESC
+        """)
     columns = [column[0] for column in cursor.description]
     documents = [dict(zip(columns, row)) for row in cursor.fetchall()]
     return {"documents": documents}
@@ -324,11 +339,35 @@ async def get_documents(conn=Depends(get_vector_db_connection)):
 async def create_document(data: Dict[str, Any], conn=Depends(get_vector_db_connection)):
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO Documents (Title, Content, Source, Metadata) VALUES (?, ?, ?, ?)",
-        (data.get("title"), data.get("content"), data.get("source"), data.get("metadata", "{}")),
+        "INSERT INTO Documents (Title, Content, Source, Metadata, KnowledgeBaseId) VALUES (?, ?, ?, ?, ?)",
+        (data.get("title"), data.get("content"), data.get("source"), data.get("metadata", "{}"),
+         data.get("knowledge_base_id")),
     )
     conn.commit()
-    return {"message": "Document created"}
+    # 获取新 ID
+    cursor.execute("SELECT IDENT_CURRENT('Documents')")
+    new_id = int(cursor.fetchone()[0])
+    return {"message": "Document created", "document_id": new_id}
+
+
+@app.put("/vector/documents/{document_id}")
+async def update_document(document_id: int, data: Dict[str, Any], conn=Depends(get_vector_db_connection)):
+    """更新文档信息（目前支持修改 knowledge_base_id）"""
+    cursor = conn.cursor()
+    cursor.execute("SELECT DocumentId FROM Documents WHERE DocumentId = ? AND IsDeleted = 0", (document_id,))
+    if not cursor.fetchone():
+        return JSONResponse(status_code=404, content={"message": "文档不存在"})
+    try:
+        if "knowledge_base_id" in data:
+            cursor.execute(
+                "UPDATE Documents SET KnowledgeBaseId = ? WHERE DocumentId = ?",
+                (data["knowledge_base_id"], document_id),
+            )
+        conn.commit()
+        return {"message": "文档已更新"}
+    except Exception as e:
+        conn.rollback()
+        return JSONResponse(status_code=500, content={"message": f"更新失败: {str(e)}"})
 
 
 @app.get("/vector/documents/{document_id}/chunks")
@@ -353,20 +392,23 @@ async def get_document_chunks(document_id: int, conn=Depends(get_vector_db_conne
     return {"chunks": chunks}
 
 
-def create_chunks_from_content(document_id: int, content: str, conn) -> List[Dict]:
-    """使用 LangChain RecursiveCharacterTextSplitter 创建分块"""
+def create_chunks_from_content(document_id: int, content: str, conn,
+                                chunk_size: int = None, chunk_overlap: int = None) -> List[Dict]:
+    """使用 LangChain RecursiveCharacterTextSplitter 创建分块并入库"""
     if not content:
         return []
 
-    # 使用 LangChain 的递归字符文本分割器
+    # 支持自定义分块参数，默认从 settings 读取
+    cs = chunk_size or settings.chunk_size
+    co = chunk_overlap or settings.chunk_overlap
+
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=settings.chunk_size,
-        chunk_overlap=settings.chunk_overlap,
+        chunk_size=cs,
+        chunk_overlap=co,
         add_start_index=True,
         separators=["\n\n", "\n", "。", "！", "？", " ", ""],
     )
 
-    # LangChain 的 split_text 返回 str 列表
     texts = text_splitter.split_text(content)
     chunks = []
 
@@ -378,7 +420,6 @@ def create_chunks_from_content(document_id: int, content: str, conn) -> List[Dic
         )
         conn.commit()
 
-        # 获取新插入的Chunk ID
         cursor.execute("SELECT IDENT_CURRENT('TextChunks')")
         row = cursor.fetchone()
         chunk_id = int(row[0]) if row and row[0] is not None else None
@@ -526,7 +567,11 @@ async def embed_document(document_id: int, conn=Depends(get_vector_db_connection
 
 
 @app.post("/vector/documents/upload")
-async def upload_document(file: UploadFile = File(...), conn=Depends(get_vector_db_connection)):
+async def upload_document(
+    file: UploadFile = File(...),
+    knowledge_base_id: int = None,
+    conn=Depends(get_vector_db_connection),
+):
     """上传文档并自动提取内容"""
     try:
         import tempfile
@@ -546,10 +591,10 @@ async def upload_document(file: UploadFile = File(...), conn=Depends(get_vector_
         else:
             text_content = file_content.decode('utf-8', errors='ignore')
         
-        # 保存到数据库
+        # 保存到数据库（仅保存文档，不自动切块和嵌入）
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO Documents (Title, Content, Source, Metadata) VALUES (?, ?, ?, ?)",
+            "INSERT INTO Documents (Title, Content, Source, Metadata, KnowledgeBaseId) VALUES (?, ?, ?, ?, ?)",
             (
                 file.filename,
                 text_content,
@@ -559,7 +604,8 @@ async def upload_document(file: UploadFile = File(...), conn=Depends(get_vector_
                     "filesize": len(file_content),
                     "filetype": file_ext,
                     "upload_time": datetime.now().isoformat()
-                })
+                }),
+                knowledge_base_id,
             ),
         )
         conn.commit()
@@ -568,27 +614,17 @@ async def upload_document(file: UploadFile = File(...), conn=Depends(get_vector_
         cursor.execute("SELECT IDENT_CURRENT('Documents')")
         row = cursor.fetchone()
         document_id = int(row[0]) if row and row[0] is not None else None
-        
+
         if document_id is None or document_id == 0:
             raise Exception("Failed to get document ID after insert")
-        
-        # 立即创建分块并生成嵌入向量
-        if text_content:
-            create_chunks_from_content(document_id, text_content, conn)
-            try:
-                embed_chunks_for_document(document_id, conn)
-                logging.info(f"Auto-embedded document {document_id}")
-            except Exception as embed_err:
-                logging.warning(f"Auto-embedding failed (Ollama may not be running): {embed_err}")
-                # 嵌入失败不阻塞上传，用户可稍后手动调用 /embed 接口
-        
+
         logging.info(f"Document uploaded: {file.filename}, ID: {document_id}")
-        
+
         return JSONResponse(
             status_code=200,
             content={"message": "Document uploaded successfully", "filename": file.filename, "documentId": document_id}
         )
-    
+
     except Exception as e:
         logging.error(f"Error uploading document: {e}")
         import traceback
@@ -597,6 +633,82 @@ async def upload_document(file: UploadFile = File(...), conn=Depends(get_vector_
             status_code=500,
             content={"message": f"Error uploading document: {str(e)}", "error": True}
         )
+
+
+@app.post("/vector/documents/{document_id}/preview-chunks")
+async def preview_document_chunks(document_id: int, data: Dict[str, Any], conn=Depends(get_vector_db_connection)):
+    """预览文档的分块结果（不入库）"""
+    cursor = conn.cursor()
+    cursor.execute("SELECT Content FROM Documents WHERE DocumentId = ? AND IsDeleted = 0", (document_id,))
+    doc = cursor.fetchone()
+    if not doc:
+        return JSONResponse(status_code=404, content={"message": "文档不存在"})
+
+    content = doc[0]
+    if not content:
+        return {"chunks": []}
+
+    chunk_size = data.get("chunk_size") or settings.chunk_size
+    chunk_overlap = data.get("chunk_overlap") or settings.chunk_overlap
+
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        add_start_index=True,
+        separators=["\n\n", "\n", "。", "！", "？", " ", ""],
+    )
+
+    texts = text_splitter.split_text(content)
+    chunks = [
+        {"ChunkIndex": i, "ChunkText": t, "Length": len(t)}
+        for i, t in enumerate(texts)
+    ]
+
+    return {"chunks": chunks, "total_chunks": len(chunks)}
+
+
+@app.post("/vector/documents/{document_id}/commit-chunks")
+async def commit_document_chunks(document_id: int, data: Dict[str, Any], conn=Depends(get_vector_db_connection)):
+    """将文档按指定参数切块并入库，同时生成向量嵌入"""
+    cursor = conn.cursor()
+    cursor.execute("SELECT Content FROM Documents WHERE DocumentId = ? AND IsDeleted = 0", (document_id,))
+    doc = cursor.fetchone()
+    if not doc:
+        return JSONResponse(status_code=404, content={"message": "文档不存在"})
+
+    content = doc[0]
+    if not content:
+        return JSONResponse(status_code=400, content={"message": "文档内容为空"})
+
+    # 先删除已存在的分块和向量（防止重复提交）
+    cursor.execute("""
+        UPDATE v SET IsDeleted = 1
+        FROM VectorIndex v JOIN TextChunks c ON v.ChunkId = c.ChunkId
+        WHERE c.DocumentId = ?
+    """, (document_id,))
+    cursor.execute("UPDATE TextChunks SET IsDeleted = 1 WHERE DocumentId = ?", (document_id,))
+    conn.commit()
+
+    chunk_size = data.get("chunk_size") or settings.chunk_size
+    chunk_overlap = data.get("chunk_overlap") or settings.chunk_overlap
+
+    # 创建分块并入库
+    chunks = create_chunks_from_content(document_id, content, conn,
+                                         chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    # 生成向量嵌入
+    try:
+        embed_result = embed_chunks_for_document(document_id, conn)
+        embedded = embed_result.get("embedded", 0)
+    except Exception as e:
+        logging.warning(f"Embedding failed during commit: {e}")
+        embedded = 0
+
+    return {
+        "message": f"已创建 {len(chunks)} 个分块，已嵌入 {embedded} 个向量",
+        "total_chunks": len(chunks),
+        "embedded": embedded,
+    }
 
 
 def extract_docx_content(file_content: bytes) -> str:
@@ -631,6 +743,127 @@ def extract_pdf_content(file_content: bytes) -> str:
         return ""
 
 
+@app.get("/vector/config")
+async def get_config():
+    """获取当前配置"""
+    return {
+        "chunk_size": settings.chunk_size,
+        "chunk_overlap": settings.chunk_overlap,
+        "embedding_model": settings.embedding_model,
+        "ollama_base_url": settings.ollama_base_url,
+    }
+
+
+@app.put("/vector/config")
+async def update_config(data: Dict[str, Any]):
+    """更新 .env 文件中的配置（chunk_size, chunk_overlap, embedding_model）"""
+    allowed_keys = {"chunk_size", "chunk_overlap", "embedding_model", "ollama_base_url"}
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+    try:
+        # 读取当前 .env
+        with open(env_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        # 小写 key -> .env 中的大写变量名
+        key_to_env = {
+            "chunk_size": "CHUNK_SIZE",
+            "chunk_overlap": "CHUNK_OVERLAP",
+            "embedding_model": "EMBEDDING_MODEL",
+            "ollama_base_url": "OLLAMA_BASE_URL",
+        }
+
+        updated = []
+        changed = {}
+        for line in lines:
+            stripped = line.strip()
+            for key in allowed_keys:
+                env_key = key_to_env[key]
+                if stripped.startswith(env_key + "="):
+                    new_val = str(data.get(key))
+                    if new_val and key in data:
+                        old_val = stripped.split("=", 1)[1]
+                        if old_val != new_val:
+                            changed[key] = (old_val, new_val)
+                            line = f"{env_key}={new_val}\n"
+                    break
+            updated.append(line)
+
+        if changed:
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.writelines(updated)
+            # 同步更新内存中的 settings
+            for key, (_, new_val) in changed.items():
+                setattr(settings, key, int(new_val) if key in ("chunk_size", "chunk_overlap") else new_val)
+            logging.info(f"Config updated: {changed}")
+            return {"message": "配置已更新", "changed": {k: {"old": v[0], "new": v[1]} for k, v in changed.items()}}
+        else:
+            return {"message": "配置无变化", "changed": {}}
+
+    except Exception as e:
+        logging.error(f"Error updating config: {e}")
+        return JSONResponse(status_code=500, content={"message": f"更新配置失败: {str(e)}"})
+
+
+# ====== 知识库管理 ======
+
+
+@app.get("/vector/knowledge-bases")
+async def get_knowledge_bases(conn=Depends(get_vector_db_connection)):
+    """获取所有知识库"""
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM KnowledgeBases WHERE IsDeleted = 0 ORDER BY CreatedAt DESC")
+    columns = [column[0] for column in cursor.description]
+    kbs = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    return {"knowledge_bases": kbs}
+
+
+@app.post("/vector/knowledge-bases")
+async def create_knowledge_base(data: Dict[str, Any], conn=Depends(get_vector_db_connection)):
+    """创建知识库"""
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO KnowledgeBases (Name, Description) VALUES (?, ?)",
+        (data.get("name"), data.get("description", "")),
+    )
+    conn.commit()
+    cursor.execute("SELECT IDENT_CURRENT('KnowledgeBases')")
+    new_id = int(cursor.fetchone()[0])
+    return {"message": "知识库已创建", "knowledge_base_id": new_id}
+
+
+@app.put("/vector/knowledge-bases/{kb_id}")
+async def update_knowledge_base(kb_id: int, data: Dict[str, Any], conn=Depends(get_vector_db_connection)):
+    """更新知识库名称/描述"""
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE KnowledgeBases SET Name = ?, Description = ?, UpdatedAt = GETDATE() WHERE KnowledgeBaseId = ? AND IsDeleted = 0",
+        (data.get("name"), data.get("description", ""), kb_id),
+    )
+    if cursor.rowcount == 0:
+        return JSONResponse(status_code=404, content={"message": "知识库不存在"})
+    conn.commit()
+    return {"message": "知识库已更新"}
+
+
+@app.delete("/vector/knowledge-bases/{kb_id}")
+async def delete_knowledge_base(kb_id: int, conn=Depends(get_vector_db_connection)):
+    """软删除知识库，同时将下属文档的 KnowledgeBaseId 置 NULL"""
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE Documents SET KnowledgeBaseId = NULL WHERE KnowledgeBaseId = ?", (kb_id,))
+        cursor.execute("UPDATE KnowledgeBases SET IsDeleted = 1 WHERE KnowledgeBaseId = ?", (kb_id,))
+        if cursor.rowcount == 0:
+            conn.rollback()
+            return JSONResponse(status_code=404, content={"message": "知识库不存在"})
+        conn.commit()
+        return {"message": "知识库已删除，下属文档已解除关联"}
+    except Exception as e:
+        conn.rollback()
+        logging.error(f"Error deleting knowledge base {kb_id}: {e}")
+        return JSONResponse(status_code=500, content={"message": f"删除失败: {str(e)}"})
+
+
 @app.get("/vector/chunks")
 async def get_chunks(conn=Depends(get_vector_db_connection)):
     cursor = conn.cursor()
@@ -638,6 +871,41 @@ async def get_chunks(conn=Depends(get_vector_db_connection)):
     columns = [column[0] for column in cursor.description]
     chunks = [dict(zip(columns, row)) for row in cursor.fetchall()]
     return {"chunks": chunks}
+
+
+@app.delete("/vector/documents/{document_id}")
+async def delete_document(document_id: int, conn=Depends(get_vector_db_connection)):
+    """删除文档及其关联的 TextChunks 和 VectorIndex 记录（软删除）"""
+    cursor = conn.cursor()
+
+    # 检查文档是否存在
+    cursor.execute("SELECT DocumentId FROM Documents WHERE DocumentId = ? AND IsDeleted = 0", (document_id,))
+    if not cursor.fetchone():
+        return JSONResponse(status_code=404, content={"message": "文档不存在"})
+
+    try:
+        # 软删除 VectorIndex 记录
+        cursor.execute("""
+            UPDATE v SET IsDeleted = 1
+            FROM VectorIndex v
+            JOIN TextChunks c ON v.ChunkId = c.ChunkId
+            WHERE c.DocumentId = ?
+        """, (document_id,))
+
+        # 软删除 TextChunks 记录
+        cursor.execute("UPDATE TextChunks SET IsDeleted = 1 WHERE DocumentId = ?", (document_id,))
+
+        # 软删除 Document 记录
+        cursor.execute("UPDATE Documents SET IsDeleted = 1 WHERE DocumentId = ?", (document_id,))
+
+        conn.commit()
+        logging.info(f"Document {document_id} and its chunks/vectors soft-deleted")
+        return {"message": "文档及关联数据已删除"}
+
+    except Exception as e:
+        conn.rollback()
+        logging.error(f"Error deleting document {document_id}: {e}")
+        return JSONResponse(status_code=500, content={"message": f"删除失败: {str(e)}"})
 
 
 @app.post("/vector/qa")

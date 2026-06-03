@@ -7,17 +7,46 @@
           <template #header>
             <div class="card-header">
               <span>文档管理</span>
-              <el-button type="primary" size="small" @click="showAddDialog = true">添加文档</el-button>
+              <div style="display: flex; gap: 12px; align-items: center">
+                <el-select v-model="selectedKB" placeholder="全部知识库" clearable style="width: 200px" @change="loadDocuments">
+                  <el-option label="全部知识库" :value="null" />
+                  <el-option v-for="kb in knowledgeBases" :key="kb.KnowledgeBaseId" :label="kb.Name" :value="kb.KnowledgeBaseId" />
+                </el-select>
+                <el-button type="primary" size="small" @click="showAddDialog = true">添加文档</el-button>
+              </div>
             </div>
           </template>
           <el-table :data="documents" border style="width: 100%">
             <el-table-column prop="DocumentId" label="ID" width="80" />
             <el-table-column prop="Title" label="标题" />
+            <el-table-column prop="KnowledgeBaseName" label="所属知识库" width="180">
+              <template #default="{ row }">
+                <template v-if="editingDocId === row.DocumentId">
+                  <el-select v-model="editDocKB" size="small" style="width: 130px" placeholder="不归属" clearable>
+                    <el-option v-for="kb in knowledgeBases" :key="kb.KnowledgeBaseId" :label="kb.Name" :value="kb.KnowledgeBaseId" />
+                  </el-select>
+                  <el-button link type="primary" size="small" @click="saveDocKB(row)" style="margin-left: 2px">保存</el-button>
+                  <el-button link size="small" @click="editingDocId = null">取消</el-button>
+                </template>
+                <template v-else>
+                  <span style="cursor: pointer; border-bottom: 1px dashed #ccc" @click="startEditDocKB(row)" :title="'点击修改知识库'">{{ row.KnowledgeBaseName || '-' }}</span>
+                </template>
+              </template>
+            </el-table-column>
             <el-table-column prop="Source" label="来源" width="200" />
             <el-table-column prop="CreatedAt" label="创建时间" width="200" />
-            <el-table-column label="操作" width="120" fixed="right">
+            <el-table-column label="操作" width="200" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" @click="showChunks(row)">查看分块</el-button>
+                <el-popconfirm
+                  title="确定删除该文档及其所有分块和向量数据？"
+                  confirm-button-text="确定删除"
+                  @confirm="deleteDocument(row)"
+                >
+                  <template #reference>
+                    <el-button link type="danger">删除</el-button>
+                  </template>
+                </el-popconfirm>
               </template>
             </el-table-column>
           </el-table>
@@ -33,6 +62,11 @@
             </el-form-item>
             <el-form-item label="来源">
               <el-input v-model="newDoc.source" />
+            </el-form-item>
+            <el-form-item label="知识库">
+              <el-select v-model="newDoc.knowledge_base_id" placeholder="不归属" clearable style="width: 100%">
+                <el-option v-for="kb in knowledgeBases" :key="kb.KnowledgeBaseId" :label="kb.Name" :value="kb.KnowledgeBaseId" />
+              </el-select>
             </el-form-item>
           </el-form>
           <template #footer>
@@ -79,26 +113,78 @@
               支持 .txt, .md, .docx, .pdf 等格式
             </div>
           </el-upload>
-          
-          <div v-if="uploadedFiles.length > 0" style="margin-top: 24px">
+
+          <div style="margin-top: 12px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap">
+            <el-select v-model="uploadKB" placeholder="选择知识库（可选）" clearable style="width: 200px">
+              <el-option v-for="kb in knowledgeBases" :key="kb.KnowledgeBaseId" :label="kb.Name" :value="kb.KnowledgeBaseId" />
+            </el-select>
+            <span style="color: #909399; font-size: 12px">上传到指定知识库</span>
+          </div>
+
+          <el-tabs v-model="chunkMethodTab" style="margin-top: 16px">
+            <el-tab-pane label="固定分块" name="fixed">
+              <div style="display: flex; gap: 24px; align-items: center; padding: 8px 0">
+                <div>
+                  <span style="font-size: 13px; margin-right: 8px">Chunk Size：</span>
+                  <el-input-number v-model="uploadChunkSize" :min="100" :max="5000" :step="100" size="small" style="width: 130px" controls-position="right" />
+                </div>
+                <div>
+                  <span style="font-size: 13px; margin-right: 8px">Chunk Overlap：</span>
+                  <el-input-number v-model="uploadChunkOverlap" :min="0" :max="1000" :step="50" size="small" style="width: 120px" controls-position="right" />
+                </div>
+              </div>
+            </el-tab-pane>
+            <el-tab-pane label="语义分块" name="semantic">
+              <div style="padding: 20px 0; color: #909399; font-size: 14px">开发中，敬请期待</div>
+            </el-tab-pane>
+          </el-tabs>
+
+          <div v-if="uploadedFiles.length > 0" style="margin-top: 16px">
             <el-divider content-position="left">已上传文档</el-divider>
-            <el-table :data="uploadedFiles" border>
-              <el-table-column prop="name" label="文件名" />
-              <el-table-column prop="size" label="大小" width="120">
+            <el-table :data="uploadedFiles" border style="width: 100%">
+              <el-table-column prop="name" label="文件名" min-width="180" />
+              <el-table-column prop="size" label="大小" width="100">
                 <template #default="{ row }">
                   {{ formatFileSize(row.size) }}
                 </template>
               </el-table-column>
-              <el-table-column prop="status" label="状态" width="120">
+              <el-table-column prop="status" label="状态" width="110">
                 <template #default="{ row }">
-                  <el-tag :type="row.status === 'success' ? 'success' : row.status === 'pending' ? 'warning' : 'danger'">
-                    {{ row.status === 'success' ? '成功' : row.status === 'pending' ? '处理中...' : '失败' }}
+                  <el-tag :type="row.status === 'success' ? 'success' : row.status === 'pending' ? 'warning' : row.status === 'committed' ? 'success' : 'danger'">
+                    {{ row.status === 'success' ? '已上传' : row.status === 'pending' ? '上传中...' : row.status === 'committed' ? '已入库' : '失败' }}
                   </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="220" fixed="right">
+                <template #default="{ row, $index }">
+                  <el-button link type="primary" size="small" :disabled="row.status !== 'success'" @click="handlePreviewChunks(row, $index)">分块预览</el-button>
+                  <el-button link type="primary" size="small" :disabled="row.status !== 'success'" @click="commitChunks(row, $index)">入库</el-button>
                 </template>
               </el-table-column>
             </el-table>
           </div>
         </el-card>
+
+        <!-- 分块预览 Dialog -->
+        <el-dialog v-model="showPreviewDialog" title="分块预览" width="70%">
+          <div style="margin-bottom: 12px; color: #909399; font-size: 13px">
+            切块方式：<el-tag size="small" type="primary">固定切块</el-tag>
+            &nbsp;&nbsp;Chunk Size：{{ previewChunkSize }}&nbsp;&nbsp;Chunk Overlap：{{ previewChunkOverlap }}
+            &nbsp;&nbsp;共 <strong>{{ previewChunks.length }}</strong> 个分块
+          </div>
+          <el-table :data="previewChunks" border max-height="500">
+            <el-table-column prop="ChunkIndex" label="#" width="60" />
+            <el-table-column prop="Length" label="长度" width="80" />
+            <el-table-column prop="ChunkText" label="内容" min-width="300">
+              <template #default="{ row }">
+                <div style="max-height: 120px; overflow-y: auto; white-space: pre-wrap; font-size: 13px">{{ row.ChunkText }}</div>
+              </template>
+            </el-table-column>
+          </el-table>
+          <template #footer>
+            <el-button @click="showPreviewDialog = false">关闭</el-button>
+          </template>
+        </el-dialog>
       </el-tab-pane>
       
       <el-tab-pane label="QA" name="qa">
@@ -114,13 +200,13 @@
               <el-button type="primary" @click="askQuestion" :loading="loading">提问</el-button>
             </el-form-item>
           </el-form>
-          
+
           <div v-if="answer" style="margin-top: 20px">
             <el-divider content-position="left">答案</el-divider>
             <el-card>
               <div v-html="answer"></div>
             </el-card>
-            
+
             <div v-if="sources.length > 0" style="margin-top: 20px">
               <el-divider content-position="left">召回内容</el-divider>
               <el-card>
@@ -135,6 +221,107 @@
           </div>
         </el-card>
       </el-tab-pane>
+
+      <el-tab-pane label="知识库" name="knowledge">
+        <el-card>
+          <template #header>
+            <div class="card-header">
+              <span>知识库列表</span>
+              <el-button type="primary" size="small" @click="showCreateKBDialog = true">创建知识库</el-button>
+            </div>
+          </template>
+          <el-table :data="knowledgeBases" border style="width: 100%">
+            <el-table-column prop="KnowledgeBaseId" label="ID" width="80" />
+            <el-table-column prop="Name" label="名称" />
+            <el-table-column prop="Description" label="描述" min-width="200">
+              <template #default="{ row }">
+                <span>{{ row.Description || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="CreatedAt" label="创建时间" width="200" />
+            <el-table-column label="操作" width="180" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="editKB(row)">编辑</el-button>
+                <el-popconfirm
+                  title="确定删除该知识库？关联文档将解除所属关系。"
+                  confirm-button-text="确定删除"
+                  @confirm="deleteKB(row)"
+                >
+                  <template #reference>
+                    <el-button link type="danger">删除</el-button>
+                  </template>
+                </el-popconfirm>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+
+        <!-- 创建知识库 Dialog -->
+        <el-dialog v-model="showCreateKBDialog" title="创建知识库" width="40%">
+          <el-form :model="kbForm" label-width="80px">
+            <el-form-item label="名称">
+              <el-input v-model="kbForm.name" placeholder="请输入知识库名称" />
+            </el-form-item>
+            <el-form-item label="描述">
+              <el-input v-model="kbForm.description" type="textarea" :rows="3" placeholder="可选" />
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="showCreateKBDialog = false">取消</el-button>
+            <el-button type="primary" @click="createKB">确定</el-button>
+          </template>
+        </el-dialog>
+
+        <!-- 编辑知识库 Dialog -->
+        <el-dialog v-model="showEditKBDialog" :title="`编辑知识库 - ${editingKB?.Name || ''}`" width="40%">
+          <el-form :model="kbEditForm" label-width="80px">
+            <el-form-item label="名称">
+              <el-input v-model="kbEditForm.name" placeholder="请输入知识库名称" />
+            </el-form-item>
+            <el-form-item label="描述">
+              <el-input v-model="kbEditForm.description" type="textarea" :rows="3" placeholder="可选" />
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="showEditKBDialog = false">取消</el-button>
+            <el-button type="primary" @click="updateKB">保存</el-button>
+          </template>
+        </el-dialog>
+      </el-tab-pane>
+
+      <el-tab-pane label="配置" name="config">
+        <el-card>
+          <template #header>
+            <div class="card-header">
+              <span>系统配置</span>
+              <el-button type="primary" size="small" @click="saveConfig" :loading="configSaving">保存配置</el-button>
+            </div>
+          </template>
+          <el-form :model="config" label-width="180px" style="max-width: 600px">
+            <el-form-item label="Chunk Size（分块大小）">
+              <el-input-number v-model="config.chunk_size" :min="100" :max="5000" :step="100" />
+              <div style="color: #909399; font-size: 12px; margin-top: 4px">每个文本块的最大字符数</div>
+            </el-form-item>
+            <el-form-item label="Chunk Overlap（分块重叠）">
+              <el-input-number v-model="config.chunk_overlap" :min="0" :max="1000" :step="50" />
+              <div style="color: #909399; font-size: 12px; margin-top: 4px">相邻文本块之间的重叠字符数</div>
+            </el-form-item>
+            <el-form-item label="Embedding Model（嵌入模型）">
+              <el-input v-model="config.embedding_model" placeholder="nomic-embed-text" />
+              <div style="color: #909399; font-size: 12px; margin-top: 4px">Ollama 上的文本嵌入模型名称</div>
+            </el-form-item>
+          </el-form>
+          <el-alert
+            v-if="configMessage"
+            :title="configMessage"
+            :type="configMessageType"
+            show-icon
+            :closable="true"
+            @close="configMessage = ''"
+            style="margin-top: 16px"
+          />
+        </el-card>
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -143,11 +330,12 @@
 import { ref, onMounted } from 'vue'
 import axios from 'axios'
 import { UploadFilled } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 
 const activeTab = ref('documents')
 const documents = ref([])
 const showAddDialog = ref(false)
-const newDoc = ref({ title: '', content: '', source: '' })
+const newDoc = ref({ title: '', content: '', source: '', knowledge_base_id: null })
 const showChunksDialog = ref(false)
 const currentDocument = ref(null)
 const currentChunks = ref([])
@@ -157,10 +345,71 @@ const question = ref('')
 const answer = ref('')
 const sources = ref([])
 const loading = ref(false)
+const knowledgeBases = ref([])
+const selectedKB = ref(null)
+const uploadKB = ref(null)
+const chunkMethodTab = ref('fixed')
+const uploadChunkSize = ref(1000)
+const uploadChunkOverlap = ref(200)
+const showCreateKBDialog = ref(false)
+const showEditKBDialog = ref(false)
+const editingKB = ref(null)
+const kbForm = ref({ name: '', description: '' })
+const kbEditForm = ref({ name: '', description: '' })
+const editingDocId = ref(null)
+const editDocKB = ref(null)
+const showPreviewDialog = ref(false)
+const previewChunks = ref([])
+const previewChunkSize = ref(0)
+const previewChunkOverlap = ref(0)
+
+const config = ref({
+  chunk_size: 1000,
+  chunk_overlap: 200,
+  embedding_model: 'nomic-embed-text',
+})
+const configSaving = ref(false)
+const configMessage = ref('')
+const configMessageType = ref('success')
+
+const loadConfig = async () => {
+  try {
+    const res = await axios.get('http://localhost:8798/vector/config')
+    config.value = res.data
+    uploadChunkSize.value = res.data.chunk_size
+    uploadChunkOverlap.value = res.data.chunk_overlap
+  } catch (error) {
+    console.error('Error loading config:', error)
+  }
+}
+
+const saveConfig = async () => {
+  configSaving.value = true
+  configMessage.value = ''
+  try {
+    const res = await axios.put('http://localhost:8798/vector/config', {
+      chunk_size: config.value.chunk_size,
+      chunk_overlap: config.value.chunk_overlap,
+      embedding_model: config.value.embedding_model,
+    })
+    configMessage.value = res.data.message
+    configMessageType.value = 'success'
+  } catch (error) {
+    console.error('Error saving config:', error)
+    configMessage.value = '保存失败: ' + (error.response?.data?.message || error.message)
+    configMessageType.value = 'error'
+  } finally {
+    configSaving.value = false
+  }
+}
 
 const loadDocuments = async () => {
   try {
-    const res = await axios.get('http://localhost:8798/vector/documents')
+    const params = {}
+    if (selectedKB.value) {
+      params.knowledge_base_id = selectedKB.value
+    }
+    const res = await axios.get('http://localhost:8798/vector/documents', { params })
     documents.value = res.data.documents
   } catch (error) {
     console.error('Error loading documents:', error)
@@ -171,7 +420,7 @@ const addDocument = async () => {
   try {
     await axios.post('http://localhost:8798/vector/documents', newDoc.value)
     showAddDialog.value = false
-    newDoc.value = { title: '', content: '', source: '' }
+    newDoc.value = { title: '', content: '', source: '', knowledge_base_id: null }
     loadDocuments()
   } catch (error) {
     console.error('Error adding document:', error)
@@ -182,12 +431,42 @@ const showChunks = async (doc) => {
   currentDocument.value = doc
   showChunksDialog.value = true
   currentChunks.value = []
-  
+
   try {
     const res = await axios.get(`http://localhost:8798/vector/documents/${doc.DocumentId}/chunks`)
     currentChunks.value = res.data.chunks || []
   } catch (error) {
     console.error('Error loading chunks:', error)
+  }
+}
+
+const deleteDocument = async (doc) => {
+  try {
+    await axios.delete(`http://localhost:8798/vector/documents/${doc.DocumentId}`)
+    ElMessage.success('文档已删除')
+    loadDocuments()
+  } catch (error) {
+    console.error('Error deleting document:', error)
+    ElMessage.error('删除失败: ' + (error.response?.data?.message || error.message))
+  }
+}
+
+const startEditDocKB = (doc) => {
+  editingDocId.value = doc.DocumentId
+  editDocKB.value = doc.KnowledgeBaseId
+}
+
+const saveDocKB = async (doc) => {
+  try {
+    await axios.put(`http://localhost:8798/vector/documents/${doc.DocumentId}`, {
+      knowledge_base_id: editDocKB.value,
+    })
+    editingDocId.value = null
+    ElMessage.success('知识库已更新')
+    loadDocuments()
+  } catch (error) {
+    console.error('Error updating document KB:', error)
+    ElMessage.error('更新失败')
   }
 }
 
@@ -197,6 +476,10 @@ const handleFileUpload = async (file) => {
   const fileItem = {
     name: file.name,
     size: file.size,
+    chunkMethod: chunkMethodTab.value,
+    chunkSize: uploadChunkSize.value,
+    chunkOverlap: uploadChunkOverlap.value,
+    documentId: null,
     status: 'pending'
   }
   uploadedFiles.value.push(fileItem)
@@ -204,13 +487,16 @@ const handleFileUpload = async (file) => {
 
   const formData = new FormData()
   formData.append('file', file)
+  if (uploadKB.value) {
+    formData.append('knowledge_base_id', uploadKB.value)
+  }
 
   try {
-    await axios.post('http://localhost:8798/vector/documents/upload', formData)
+    const res = await axios.post('http://localhost:8798/vector/documents/upload', formData)
     uploadedFiles.value[fileIndex].status = 'success'
+    uploadedFiles.value[fileIndex].documentId = res.data.documentId
   } catch (error) {
     console.error('Upload request failed, will retry check after 10s:', error)
-    // 等 10 秒后重新加载文档列表，确认是否实际上传成功
     setTimeout(async () => {
       try {
         const res = await axios.get('http://localhost:8798/vector/documents')
@@ -225,6 +511,37 @@ const handleFileUpload = async (file) => {
     loadDocuments()
   }
   return false
+}
+
+const handlePreviewChunks = async (row, index) => {
+  try {
+    const res = await axios.post(`http://localhost:8798/vector/documents/${row.documentId}/preview-chunks`, {
+      chunk_size: row.chunkSize,
+      chunk_overlap: row.chunkOverlap,
+    })
+    previewChunks.value = res.data.chunks
+    previewChunkSize.value = row.chunkSize
+    previewChunkOverlap.value = row.chunkOverlap
+    showPreviewDialog.value = true
+  } catch (error) {
+    console.error('Error previewing chunks:', error)
+    ElMessage.error('分块预览失败')
+  }
+}
+
+const commitChunks = async (row, index) => {
+  try {
+    const res = await axios.post(`http://localhost:8798/vector/documents/${row.documentId}/commit-chunks`, {
+      chunk_size: row.chunkSize,
+      chunk_overlap: row.chunkOverlap,
+    })
+    uploadedFiles.value[index].status = 'committed'
+    ElMessage.success(res.data.message)
+    loadDocuments()
+  } catch (error) {
+    console.error('Error committing chunks:', error)
+    ElMessage.error('入库失败: ' + (error.response?.data?.message || error.message))
+  }
 }
 
 const formatFileSize = (bytes) => {
@@ -255,8 +572,75 @@ const askQuestion = async () => {
   }
 }
 
+const loadKnowledgeBases = async () => {
+  try {
+    const res = await axios.get('http://localhost:8798/vector/knowledge-bases')
+    knowledgeBases.value = res.data.knowledge_bases
+  } catch (error) {
+    console.error('Error loading knowledge bases:', error)
+  }
+}
+
+const createKB = async () => {
+  if (!kbForm.value.name.trim()) {
+    ElMessage.warning('请输入知识库名称')
+    return
+  }
+  try {
+    await axios.post('http://localhost:8798/vector/knowledge-bases', {
+      name: kbForm.value.name,
+      description: kbForm.value.description,
+    })
+    showCreateKBDialog.value = false
+    kbForm.value = { name: '', description: '' }
+    ElMessage.success('知识库已创建')
+    loadKnowledgeBases()
+  } catch (error) {
+    console.error('Error creating knowledge base:', error)
+    ElMessage.error('创建失败')
+  }
+}
+
+const editKB = (kb) => {
+  editingKB.value = kb
+  kbEditForm.value = { name: kb.Name, description: kb.Description || '' }
+  showEditKBDialog.value = true
+}
+
+const updateKB = async () => {
+  if (!kbEditForm.value.name.trim()) {
+    ElMessage.warning('请输入知识库名称')
+    return
+  }
+  try {
+    await axios.put(`http://localhost:8798/vector/knowledge-bases/${editingKB.value.KnowledgeBaseId}`, {
+      name: kbEditForm.value.name,
+      description: kbEditForm.value.description,
+    })
+    showEditKBDialog.value = false
+    ElMessage.success('知识库已更新')
+    loadKnowledgeBases()
+  } catch (error) {
+    console.error('Error updating knowledge base:', error)
+    ElMessage.error('更新失败')
+  }
+}
+
+const deleteKB = async (kb) => {
+  try {
+    await axios.delete(`http://localhost:8798/vector/knowledge-bases/${kb.KnowledgeBaseId}`)
+    ElMessage.success('知识库已删除')
+    loadKnowledgeBases()
+  } catch (error) {
+    console.error('Error deleting knowledge base:', error)
+    ElMessage.error('删除失败: ' + (error.response?.data?.message || error.message))
+  }
+}
+
 onMounted(() => {
   loadDocuments()
+  loadConfig()
+  loadKnowledgeBases()
 })
 </script>
 
