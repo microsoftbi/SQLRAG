@@ -1,7 +1,7 @@
 <template>
   <el-container style="height: 100vh">
     <el-header style="background-color: #409EFF; color: white; display: flex; align-items: center">
-      <h1 style="margin: 0">SQLRAG 系统</h1>
+      <h1 style="margin: 0">SQLServer RAG DEMO</h1>
     </el-header>
     <el-container>
       <el-aside width="200px" style="background-color: #f5f7fa; padding-top: 20px">

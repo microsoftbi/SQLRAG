@@ -9,6 +9,8 @@
 - FastAPI
 - PyODBC (SQL Server 连接)
 - OpenAI SDK (LLM 集成)
+- LangChain Text Splitters (文档分块)
+- python-docx / PyPDF2 (文档解析)
 
 ### 前端
 - Vue 3
@@ -25,23 +27,24 @@
 ```
 SQLRAG/
 ├── backend/              # 后端服务
-│   ├── main.py          # FastAPI 主文件
-│   ├── config.py        # 配置管理
-│   ├── database.py      # 数据库连接
+│   ├── main.py          # FastAPI 主文件（含所有 API 端点）
+│   ├── config.py        # 配置管理（pydantic-settings）
+│   ├── database.py      # 数据库连接依赖
 │   ├── requirements.txt # Python 依赖
 │   ├── .env             # 环境变量 (需自行配置)
 │   └── .env.example     # 环境变量示例
 ├── frontend/            # 前端页面
 │   ├── src/
-│   │   ├── views/       # 页面组件
-│   │   ├── router/      # 路由
-│   │   ├── App.vue      # 根组件
+│   │   ├── views/       # 页面组件（GraphDB.vue, VectorDB.vue）
+│   │   ├── router/      # 路由配置
+│   │   ├── App.vue      # 根组件（含侧边栏导航）
 │   │   └── main.js      # 入口文件
 │   ├── index.html       # HTML 模板
 │   ├── package.json     # 前端依赖
 │   └── vite.config.js   # Vite 配置
 ├── 00_GraphDB.sql       # GraphDB 初始化脚本
 ├── 00_VectorDB.sql      # VectorDB 初始化脚本
+├── 功能说明.md          # 详细功能说明文档
 ├── start.bat           # 启动脚本
 └── stop.bat            # 停止脚本
 ```
@@ -50,17 +53,18 @@ SQLRAG/
 
 ### GraphDB 页面
 - 知识图谱可视化展示
-- 节点关系查询
-- 节点深度探索
+- 节点关系查询与深度探索
 - 基于 LLM 的图数据库问答
 - 自动生成 SQL Server 图查询
 
 ### VectorDB 页面
-- 文档管理（查看、添加）
-- 文档上传（支持 .txt, .md, .docx, .pdf）
-- 文档分块查看
-- 基于文档的智能问答
-- 参考来源展示
+- **文档管理**：查看、添加、删除文档，支持知识库筛选和行内修改所属知识库
+- **文档上传**：支持 .txt, .md, .docx, .pdf 格式上传，上传后暂不入库
+- **固定分块**：使用 LangChain 按字符数分块，可自定义 Chunk Size 和 Overlap，预览后入库
+- **语义分块**：调用大模型对文档进行智能语义分段，原文/结果对比预览后入库
+- **知识库管理**：创建、编辑、删除知识库，用于文档分组管理
+- **系统配置**：在线修改 Chunk Size、Chunk Overlap、Embedding Model 等参数
+- **智能问答**：基于向量检索的 RAG 问答，支持来源展示
 
 ## 快速开始
 
@@ -69,6 +73,7 @@ SQLRAG/
 1. SQL Server 2025 已安装并运行
 2. Python 3.11+ 已安装
 3. Node.js 18+ 已安装
+4. Ollama 已安装并运行（用于生成文本嵌入向量）
 
 ### 数据库初始化
 
@@ -92,7 +97,15 @@ PASSWORD=Passw0rd
 # 后端端口
 BACKEND_PORT=8798
 
-# LLM 配置
+# 分块配置
+CHUNK_SIZE=1000
+CHUNK_OVERLAP=200
+
+# Embedding 配置
+EMBEDDING_MODEL=nomic-embed-text
+OLLAMA_BASE_URL=http://localhost:11434
+
+# LLM 配置（用于语义分块和问答）
 LLM_API_KEY=your_api_key_here
 LLM_BASE_URL=https://api.deepseek.com/v1
 LLM_MODEL=deepseek-chat
@@ -141,23 +154,45 @@ npm run dev
 
 - 前端: http://localhost:3300
 - 后端: http://localhost:8798
+- 后端 API 文档: http://localhost:8798/docs
 
-## API 文档
+## 主要 API
 
-后端启动后访问: http://localhost:8798/docs
+### GraphDB
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/graph/data` | 获取图谱数据 |
+| POST | `/graph/qa` | 图数据库问答 |
 
-### 主要 API
+### VectorDB — 文档
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/vector/documents` | 获取文档列表（支持按知识库筛选） |
+| POST | `/vector/documents` | 添加文档 |
+| PUT | `/vector/documents/{id}` | 更新文档信息 |
+| DELETE | `/vector/documents/{id}` | 删除文档 |
+| POST | `/vector/documents/upload` | 上传文档 |
+| GET | `/vector/documents/{id}/chunks` | 获取文档分块 |
+| POST | `/vector/documents/{id}/embed` | 生成向量嵌入 |
+| POST | `/vector/documents/{id}/preview-chunks` | 预览固定分块 |
+| POST | `/vector/documents/{id}/semantic-chunk` | 语义分块 |
+| POST | `/vector/documents/{id}/commit-chunks` | 固定分块入库 |
+| POST | `/vector/documents/{id}/commit-chunks-raw` | 语义分块结果入库 |
 
-#### GraphDB
-- `GET /graph/data` - 获取图谱数据
-- `POST /graph/qa` - 图数据库问答
+### VectorDB — 知识库
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/vector/knowledge-bases` | 获取知识库列表 |
+| POST | `/vector/knowledge-bases` | 创建知识库 |
+| PUT | `/vector/knowledge-bases/{id}` | 更新知识库 |
+| DELETE | `/vector/knowledge-bases/{id}` | 删除知识库 |
 
-#### VectorDB
-- `GET /vector/documents` - 获取文档列表
-- `POST /vector/documents` - 添加文档
-- `POST /vector/documents/upload` - 上传文档
-- `GET /vector/documents/{document_id}/chunks` - 获取文档分块
-- `POST /vector/qa` - 向量检索问答
+### VectorDB — 其他
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/vector/config` | 获取系统配置 |
+| PUT | `/vector/config` | 更新系统配置 |
+| POST | `/vector/qa` | 向量检索问答 |
 
 ## 日志
 

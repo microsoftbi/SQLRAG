@@ -8,11 +8,14 @@
       >
         🌐 全景
       </button>
-      <button 
-        :class="['tab-btn', { active: activeTab === 'qa' }]" 
+      <button
+        :class="['tab-btn', { active: activeTab === 'qa' }]"
         @click="activeTab = 'qa'"
       >
         💬 QA
+      </button>
+      <button class="tab-btn story-tab-btn" @click="showStory">
+        📖 剧集简介
       </button>
     </div>
 
@@ -110,6 +113,21 @@
         </div>
       </div>
     </div>
+
+    <!-- 剧集简介弹窗 -->
+    <div v-if="showStoryDialog" class="modal-overlay" @click.self="showStoryDialog = false">
+      <div class="modal-content story-modal">
+        <div class="modal-header">
+          <h3>《低智商犯罪》剧集简介</h3>
+          <button class="close-btn" @click="showStoryDialog = false">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="story-content">
+            <pre>{{ storyContent }}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -146,6 +164,19 @@ const exampleQuestions = [
   '从张一昂到霍正之间有哪些关联路径？',
   '哪些人物同时出现在多个案件中？'
 ]
+
+const showStoryDialog = ref(false)
+const storyContent = ref('')
+
+const showStory = async () => {
+  try {
+    const res = await axios.get('http://localhost:8798/story')
+    storyContent.value = res.data.content
+  } catch {
+    storyContent.value = '无法加载剧集简介。'
+  }
+  showStoryDialog.value = true
+}
 
 const nodesCount = computed(() => nodesData.value.length)
 const edgesCount = computed(() => edgesData.value.length)
@@ -453,6 +484,17 @@ onUnmounted(() => {
   box-shadow: 0 4px 12px rgba(64, 158, 255, 0.4);
 }
 
+.story-tab-btn {
+  background: #fff8e1;
+  color: #E6A23C;
+  border: 1px solid #E6A23C;
+}
+
+.story-tab-btn:hover {
+  background: #E6A23C;
+  color: white;
+}
+
 .qa-container {
   max-width: 900px;
   margin: 0 auto;
@@ -508,6 +550,49 @@ onUnmounted(() => {
 .ask-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.story-btn {
+  display: inline-block;
+  margin-top: 12px;
+  margin-left: 12px;
+  padding: 10px 24px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #E6A23C;
+  background: #fff;
+  border: 2px solid #E6A23C;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.story-btn:hover {
+  background: #E6A23C;
+  color: white;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(230, 162, 60, 0.4);
+}
+
+.story-modal {
+  width: 80% !important;
+  max-width: 1000px !important;
+}
+
+.story-content {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.story-content pre {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: 'Microsoft YaHei', 'PingFang SC', Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.8;
+  color: #333;
+  margin: 0;
 }
 
 .qa-options {

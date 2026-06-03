@@ -179,6 +179,18 @@ async def root():
     return {"message": "SQLRAG API is running"}
 
 
+@app.get("/story")
+async def get_story():
+    """返回 00_Story.md 的内容"""
+    story_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "00_Story.md")
+    try:
+        with open(story_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return {"content": content}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": f"读取失败: {str(e)}"})
+
+
 def parse_graph_id(graph_id_str):
     """Parse SQL Server graph ID JSON to (table, id) - ensure id is int"""
     try:
@@ -667,6 +679,87 @@ async def preview_document_chunks(document_id: int, data: Dict[str, Any], conn=D
     return {"chunks": chunks, "total_chunks": len(chunks)}
 
 
+@app.post("/vector/documents/{document_id}/semantic-chunk")
+async def semantic_chunk_document(document_id: int, conn=Depends(get_vector_db_connection)):
+    """调用大模型对文档进行语义分块"""
+    cursor = conn.cursor()
+    cursor.execute("SELECT Content FROM Documents WHERE DocumentId = ? AND IsDeleted = 0", (document_id,))
+    doc = cursor.fetchone()
+    if not doc:
+        return JSONResponse(status_code=404, content={"message": "文档不存在"})
+
+    content = doc[0]
+    if not content:
+        return JSONResponse(status_code=400, content={"message": "文档内容为空"})
+
+    if not settings.llm_api_key:
+        return JSONResponse(status_code=400, content={"message": "未配置 LLM API Key，请在 .env 中设置 LLM_API_KEY"})
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url
+        )
+
+        prompt = f"""你是一个文本分段专家。请将以下文章按照语义进行合理的分段。
+
+要求：
+1. 根据文章的自然段落和语义完整性进行分段
+2. 每个分段应该是一个完整的语义单元
+3. 保持原文内容不变，不要修改、删除或添加任何文字
+4. 返回一个 JSON 数组，每个元素是一个分段的文本
+
+输出格式（仅返回 JSON，不要其他任何内容）：
+{{"chunks": ["第一段内容...", "第二段内容...", ...]}}
+
+文章内容：
+{content}"""
+
+        response = client.chat.completions.create(
+            model=settings.llm_model,
+            messages=[
+                {"role": "system", "content": "你是一个文本分段专家，擅长将长文本按语义分割成合理的段落。"},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=8192,
+        )
+
+        result_text = response.choices[0].message.content
+
+        try:
+            result = json.loads(result_text)
+        except json.JSONDecodeError:
+            import re
+            json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', result_text)
+            if json_match:
+                result = json.loads(json_match.group(1))
+            else:
+                raise
+
+        chunks = result.get("chunks", [])
+        chunked_result = [
+            {"ChunkIndex": i, "ChunkText": t, "Length": len(t)}
+            for i, t in enumerate(chunks)
+        ]
+
+        logging.info(f"Semantic chunked document {document_id}: {len(chunks)} chunks")
+
+        return {
+            "original_content": content,
+            "chunks": chunked_result,
+            "total_chunks": len(chunks),
+        }
+
+    except ImportError:
+        return JSONResponse(status_code=500, content={"message": "openai library not installed, please install: pip install openai"})
+    except Exception as e:
+        logging.error(f"Error semantic chunking document {document_id}: {e}")
+        return JSONResponse(status_code=500, content={"message": f"语义分块失败: {str(e)}"})
+
+
 @app.post("/vector/documents/{document_id}/commit-chunks")
 async def commit_document_chunks(document_id: int, data: Dict[str, Any], conn=Depends(get_vector_db_connection)):
     """将文档按指定参数切块并入库，同时生成向量嵌入"""
@@ -707,6 +800,50 @@ async def commit_document_chunks(document_id: int, data: Dict[str, Any], conn=De
     return {
         "message": f"已创建 {len(chunks)} 个分块，已嵌入 {embedded} 个向量",
         "total_chunks": len(chunks),
+        "embedded": embedded,
+    }
+
+
+@app.post("/vector/documents/{document_id}/commit-chunks-raw")
+async def commit_document_chunks_raw(document_id: int, data: Dict[str, Any], conn=Depends(get_vector_db_connection)):
+    """将指定的分块列表直接入库（用于语义分块结果），并生成向量嵌入"""
+    cursor = conn.cursor()
+    cursor.execute("SELECT DocumentId FROM Documents WHERE DocumentId = ? AND IsDeleted = 0", (document_id,))
+    if not cursor.fetchone():
+        return JSONResponse(status_code=404, content={"message": "文档不存在"})
+
+    chunks_text = data.get("chunks", [])
+    if not chunks_text:
+        return JSONResponse(status_code=400, content={"message": "分块列表为空"})
+
+    # 先删除已存在的分块和向量
+    cursor.execute("""
+        UPDATE v SET IsDeleted = 1
+        FROM VectorIndex v JOIN TextChunks c ON v.ChunkId = c.ChunkId
+        WHERE c.DocumentId = ?
+    """, (document_id,))
+    cursor.execute("UPDATE TextChunks SET IsDeleted = 1 WHERE DocumentId = ?", (document_id,))
+    conn.commit()
+
+    # 入库分块
+    for i, chunk_text in enumerate(chunks_text):
+        cursor.execute(
+            "INSERT INTO TextChunks (DocumentId, ChunkIndex, ChunkText, CreatedAt) VALUES (?, ?, ?, GETDATE())",
+            (document_id, i, chunk_text)
+        )
+        conn.commit()
+
+    # 生成向量嵌入
+    try:
+        embed_result = embed_chunks_for_document(document_id, conn)
+        embedded = embed_result.get("embedded", 0)
+    except Exception as e:
+        logging.warning(f"Embedding failed during raw commit: {e}")
+        embedded = 0
+
+    return {
+        "message": f"已入库 {len(chunks_text)} 个分块，已嵌入 {embedded} 个向量",
+        "total_chunks": len(chunks_text),
         "embedded": embedded,
     }
 

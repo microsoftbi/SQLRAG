@@ -133,36 +133,63 @@
                   <el-input-number v-model="uploadChunkOverlap" :min="0" :max="1000" :step="50" size="small" style="width: 120px" controls-position="right" />
                 </div>
               </div>
+              <div v-if="uploadedFiles.length > 0" style="margin-top: 8px">
+                <el-divider content-position="left">已上传文档</el-divider>
+                <el-table :data="uploadedFiles" border style="width: 100%">
+                  <el-table-column prop="name" label="文件名" min-width="180" />
+                  <el-table-column prop="size" label="大小" width="100">
+                    <template #default="{ row }">
+                      {{ formatFileSize(row.size) }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="status" label="状态" width="110">
+                    <template #default="{ row }">
+                      <el-tag :type="row.status === 'success' ? 'success' : row.status === 'pending' ? 'warning' : row.status === 'committed' ? 'success' : 'danger'">
+                        {{ row.status === 'success' ? '已上传' : row.status === 'pending' ? '上传中...' : row.status === 'committed' ? '已入库' : '失败' }}
+                      </el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="操作" width="220" fixed="right">
+                    <template #default="{ row, $index }">
+                      <el-button link type="primary" size="small" :disabled="row.status !== 'success'" @click="handlePreviewChunks(row, $index)">分块预览</el-button>
+                      <el-button link type="primary" size="small" :disabled="row.status !== 'success'" @click="commitChunks(row, $index)">入库</el-button>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
             </el-tab-pane>
             <el-tab-pane label="语义分块" name="semantic">
-              <div style="padding: 20px 0; color: #909399; font-size: 14px">开发中，敬请期待</div>
+              <div style="padding: 8px 0">
+                <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 12px">
+                  <el-select v-model="semanticDocId" placeholder="选择已上传的文档" style="width: 300px">
+                    <el-option v-for="f in uploadedFiles" :key="f.documentId" :label="f.name" :value="f.documentId" />
+                  </el-select>
+                  <el-button type="primary" @click="startSemanticChunk" :loading="semanticLoading" :disabled="!semanticDocId">开始语义分块</el-button>
+                </div>
+                <div v-if="semanticResult" style="display: flex; gap: 16px; min-height: 400px">
+                  <div style="flex: 1; border: 1px solid #dcdfe6; border-radius: 4px; display: flex; flex-direction: column">
+                    <div style="background: #f5f7fa; padding: 8px 12px; font-weight: bold; border-bottom: 1px solid #dcdfe6">原文</div>
+                    <div style="padding: 12px; overflow-y: auto; white-space: pre-wrap; font-size: 13px; flex: 1">{{ semanticResult.original }}</div>
+                  </div>
+                  <div style="flex: 1; border: 1px solid #dcdfe6; border-radius: 4px; display: flex; flex-direction: column">
+                    <div style="background: #f5f7fa; padding: 8px 12px; font-weight: bold; border-bottom: 1px solid #dcdfe6">
+                      分块结果（共 {{ semanticResult.chunks.length }} 块）
+                      <el-button type="primary" size="small" style="float: right" @click="commitSemanticChunks" :loading="semanticCommitting">文档入库</el-button>
+                    </div>
+                    <div style="padding: 12px; overflow-y: auto; flex: 1">
+                      <div v-for="(chunk, idx) in semanticResult.chunks" :key="idx" style="margin-bottom: 12px; padding: 8px; background: #f0f9ff; border-radius: 4px; border-left: 3px solid #409eff">
+                        <div style="font-size: 12px; color: #909399; margin-bottom: 4px">#{{ idx + 1 }}（长度：{{ chunk.Length }}）</div>
+                        <div style="font-size: 13px; white-space: pre-wrap">{{ chunk.ChunkText }}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div v-else-if="!semanticLoading" style="padding: 40px 0; text-align: center; color: #909399; font-size: 14px">
+                  请先上传文档，然后选择一个文档开始语义分块
+                </div>
+              </div>
             </el-tab-pane>
           </el-tabs>
-
-          <div v-if="uploadedFiles.length > 0" style="margin-top: 16px">
-            <el-divider content-position="left">已上传文档</el-divider>
-            <el-table :data="uploadedFiles" border style="width: 100%">
-              <el-table-column prop="name" label="文件名" min-width="180" />
-              <el-table-column prop="size" label="大小" width="100">
-                <template #default="{ row }">
-                  {{ formatFileSize(row.size) }}
-                </template>
-              </el-table-column>
-              <el-table-column prop="status" label="状态" width="110">
-                <template #default="{ row }">
-                  <el-tag :type="row.status === 'success' ? 'success' : row.status === 'pending' ? 'warning' : row.status === 'committed' ? 'success' : 'danger'">
-                    {{ row.status === 'success' ? '已上传' : row.status === 'pending' ? '上传中...' : row.status === 'committed' ? '已入库' : '失败' }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="220" fixed="right">
-                <template #default="{ row, $index }">
-                  <el-button link type="primary" size="small" :disabled="row.status !== 'success'" @click="handlePreviewChunks(row, $index)">分块预览</el-button>
-                  <el-button link type="primary" size="small" :disabled="row.status !== 'success'" @click="commitChunks(row, $index)">入库</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
         </el-card>
 
         <!-- 分块预览 Dialog -->
@@ -351,6 +378,10 @@ const uploadKB = ref(null)
 const chunkMethodTab = ref('fixed')
 const uploadChunkSize = ref(1000)
 const uploadChunkOverlap = ref(200)
+const semanticDocId = ref(null)
+const semanticLoading = ref(false)
+const semanticResult = ref(null)
+const semanticCommitting = ref(false)
 const showCreateKBDialog = ref(false)
 const showEditKBDialog = ref(false)
 const editingKB = ref(null)
@@ -482,6 +513,7 @@ const handleFileUpload = async (file) => {
     documentId: null,
     status: 'pending'
   }
+  semanticResult.value = null
   uploadedFiles.value.push(fileItem)
   const fileIndex = uploadedFiles.value.length - 1
 
@@ -541,6 +573,45 @@ const commitChunks = async (row, index) => {
   } catch (error) {
     console.error('Error committing chunks:', error)
     ElMessage.error('入库失败: ' + (error.response?.data?.message || error.message))
+  }
+}
+
+const startSemanticChunk = async () => {
+  if (!semanticDocId.value) return
+  semanticLoading.value = true
+  semanticResult.value = null
+  try {
+    const res = await axios.post(`http://localhost:8798/vector/documents/${semanticDocId.value}/semantic-chunk`)
+    semanticResult.value = {
+      original: res.data.original_content,
+      chunks: res.data.chunks,
+    }
+  } catch (error) {
+    console.error('Error semantic chunking:', error)
+    ElMessage.error('语义分块失败: ' + (error.response?.data?.message || error.message))
+  } finally {
+    semanticLoading.value = false
+  }
+}
+
+const commitSemanticChunks = async () => {
+  if (!semanticDocId.value || !semanticResult.value) return
+  semanticCommitting.value = true
+  try {
+    const chunkTexts = semanticResult.value.chunks.map(c => c.ChunkText)
+    const res = await axios.post(`http://localhost:8798/vector/documents/${semanticDocId.value}/commit-chunks-raw`, {
+      chunks: chunkTexts,
+    })
+    ElMessage.success(res.data.message)
+    // 重置语义分块界面
+    semanticDocId.value = null
+    semanticResult.value = null
+    loadDocuments()
+  } catch (error) {
+    console.error('Error committing semantic chunks:', error)
+    ElMessage.error('入库失败: ' + (error.response?.data?.message || error.message))
+  } finally {
+    semanticCommitting.value = false
   }
 }
 
