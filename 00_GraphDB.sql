@@ -523,9 +523,6 @@ FROM Person p, CaseNode c WHERE p.name = N'周荣'   AND c.name = N'梅东洗钱
 INSERT INTO PerpetratorOf ($from_id, $to_id, confession)
 SELECT p.$node_id, c.$node_id, 1
 FROM Person p, CaseNode c WHERE p.name = N'方庸'   AND c.name = N'方庸贪腐案';
-INSERT INTO PerpetratorOf ($from_id, $to_id, confession)
-SELECT p.$node_id, c.$node_id, 1
-FROM Person p, CaseNode c WHERE p.name = N'李峰'   AND c.name = N'叶剑遇害案'; -- A级通缉犯被顺手抓获
 
 -- 4.6 受害人关系 VictimOf (Person -> CaseNode)
 INSERT INTO VictimOf ($from_id, $to_id, cause)
@@ -540,9 +537,6 @@ FROM Person p, CaseNode c WHERE p.name = N'刘背'   AND c.name = N'编钟交易
 INSERT INTO VictimOf ($from_id, $to_id, cause)
 SELECT p.$node_id, c.$node_id, N'被方超刘直遗忘在后备箱窒息死亡'
 FROM Person p, CaseNode c WHERE p.name = N'林凯'   AND c.name = N'方超刘直系列抢劫案';
-INSERT INTO VictimOf ($from_id, $to_id, cause)
-SELECT p.$node_id, c.$node_id, N'被张一昂和李茜击毙'
-FROM Person p, CaseNode c WHERE p.name = N'李棚改' AND c.name = N'叶剑遇害案';
 INSERT INTO VictimOf ($from_id, $to_id, cause)
 SELECT p.$node_id, c.$node_id, N'坠崖身亡'
 FROM Person p, CaseNode c WHERE p.name = N'朱亦飞' AND c.name = N'编钟交易案';
@@ -612,6 +606,9 @@ FROM Person p1, Person p2 WHERE p1.name = N'杜聪'   AND p2.name = N'周荣';
 INSERT INTO ConflictWith ($from_id, $to_id, reason)
 SELECT p1.$node_id, p2.$node_id, N'欺骗编钟价格'
 FROM Person p1, Person p2 WHERE p1.name = N'周荣'   AND p2.name = N'朱亦飞';
+INSERT INTO ConflictWith ($from_id, $to_id, reason)
+SELECT p1.$node_id, p2.$node_id, N'兄弟冲突-朗博文被周荣利用朗博图施压，两人貌合神离'
+FROM Person p1, Person p2 WHERE p1.name = N'朗博文' AND p2.name = N'周荣';
 
 -- 4.10 通讯关系 CommunicatesWith (Person -> Person)
 INSERT INTO CommunicatesWith ($from_id, $to_id, direction, notes)
@@ -770,7 +767,7 @@ INSERT INTO LocatedIn ($from_id, $to_id, description)
 SELECT e.$node_id, l.$node_id, N'抓捕地点'
 FROM Event e, Location l WHERE e.name = N'张一昂火车站抓捕蒋英李峰' AND l.name = N'三江口火车站';
 INSERT INTO LocatedIn ($from_id, $to_id, description)
-SELECT e.$node_id, l.$node_id, N'火并地点'
+SELECT e.$node_id, l.$node_id, N'推测在刘背落脚点（郑勇兵住所）'
 FROM Event e, Location l WHERE e.name = N'霍正与刘背火并' AND l.name = N'郑勇兵住所';
 INSERT INTO LocatedIn ($from_id, $to_id, description)
 SELECT e.$node_id, l.$node_id, N'方超刘直被困'
@@ -833,10 +830,6 @@ FROM Event e, Location l WHERE e.name = N'方超刘直乔装抢劫金店' AND l.
 INSERT INTO OccursAt ($from_id, $to_id, time)
 SELECT e.$node_id, l.$node_id, N'调查刘背'
 FROM Event e, Location l WHERE e.name = N'李茜假扮物业试探刘背' AND l.name = N'郑勇兵住所';
-
-INSERT INTO OccursAt ($from_id, $to_id, time)
-SELECT e.$node_id, l.$node_id, N'宋星被害'
-FROM Event e, Location l WHERE e.name = N'宋星被方超刘直扔下楼' AND l.name = N'郑勇兵住所';
 
 INSERT INTO OccursAt ($from_id, $to_id, time)
 SELECT e.$node_id, l.$node_id, N'朗博图认罪'
@@ -936,6 +929,9 @@ FROM Organization o, Location l WHERE o.name = N'枫林晚酒店' AND l.name = N
 INSERT INTO RelatedTo ($from_id, $to_id, relationship)
 SELECT p.$node_id, o.$node_id, N'方超刘直混入三江口日报'
 FROM Person p, Organization o WHERE p.name = N'方超' AND o.name = N'三江口日报';
+INSERT INTO RelatedTo ($from_id, $to_id, relationship)
+SELECT p.$node_id, o.$node_id, N'方超刘直混入三江口日报'
+FROM Person p, Organization o WHERE p.name = N'刘直' AND o.name = N'三江口日报';
 
 INSERT INTO RelatedTo ($from_id, $to_id, relationship)
 SELECT p.$node_id, o.$node_id, N'朱亦飞是该团伙成员'
@@ -955,6 +951,19 @@ INSERT INTO LocatedIn ($from_id, $to_id, description) SELECT p.$node_id, l.$node
 INSERT INTO LocatedIn ($from_id, $to_id, description) SELECT p.$node_id, l.$node_id, N'小毛躲藏地点' FROM Person p, Location l WHERE p.name = N'小毛' AND l.name = N'涵洞';
 INSERT INTO LocatedIn ($from_id, $to_id, description) SELECT p.$node_id, l.$node_id, N'李棚改失足地点' FROM Person p, Location l WHERE p.name = N'李棚改' AND l.name = N'涵洞';
 INSERT INTO RelatedTo ($from_id, $to_id, relationship) SELECT p.$node_id, l.$node_id, N'杜聪在涵洞外埋伏' FROM Person p, Location l WHERE p.name = N'杜聪' AND l.name = N'涵洞';
+
+-- 朗博文带刀车撞死叶剑(伪供) 节点关系补充
+INSERT INTO OccursAt ($from_id, $to_id, time)
+SELECT e.$node_id, l.$node_id, N'朗博文伪供称在此处撞死叶剑'
+FROM Event e, Location l WHERE e.name = N'朗博文带刀车撞死叶剑(伪供)' AND l.name = N'小树林河边';
+
+INSERT INTO Witness ($from_id, $to_id, notes)
+SELECT p.$node_id, e.$node_id, N'朗博文伪供自己作案，掩盖弟弟朗博图'
+FROM Person p, Event e WHERE p.name = N'朗博文' AND e.name = N'朗博文带刀车撞死叶剑(伪供)';
+
+INSERT INTO Witness ($from_id, $to_id, notes)
+SELECT p.$node_id, e.$node_id, N'朗博图实际用带刀的车杀死叶剑，朗博文的伪供基于其描述'
+FROM Person p, Event e WHERE p.name = N'朗博图' AND e.name = N'朗博文带刀车撞死叶剑(伪供)';
 
 -- ============================================================
 -- 5. 示例查询 (Sample Queries)

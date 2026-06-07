@@ -552,28 +552,6 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 
-.story-btn {
-  display: inline-block;
-  margin-top: 12px;
-  margin-left: 12px;
-  padding: 10px 24px;
-  font-size: 14px;
-  font-weight: 600;
-  color: #E6A23C;
-  background: #fff;
-  border: 2px solid #E6A23C;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: all 0.3s;
-}
-
-.story-btn:hover {
-  background: #E6A23C;
-  color: white;
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(230, 162, 60, 0.4);
-}
-
 .story-modal {
   width: 80% !important;
   max-width: 1000px !important;

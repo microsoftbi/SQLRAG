@@ -25,7 +25,15 @@
       "Bash(cmd.exe //c \"cd c:\\\\Users\\\\TEMP\\\\Desktop\\\\SQLRAG\\\\backend && python test_upload_fix.py\")",
       "Bash(cmd.exe //c \"cd c:\\\\Users\\\\TEMP\\\\Desktop\\\\SQLRAG\\\\backend && python -c \\\\\"import urllib.request, json; resp = urllib.request.urlopen\\('http://localhost:8798/'\\); print\\(resp.status, resp.read\\(\\).decode\\(\\)\\)\\\\\"\")",
       "Bash(cmd.exe //c \"type C:\\\\Users\\\\TEMP\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-TEMP-Desktop-SQLRAG\\\\903b9a13-d4ca-48ce-8590-56c5d80d4d0a\\\\tasks\\\\bnyy0uyn1.output\")",
-      "Bash(cmd.exe //c \"netstat -ano | findstr :8798 | findstr LISTENING\")"
+      "Bash(cmd.exe //c \"netstat -ano | findstr :8798 | findstr LISTENING\")",
+      "Bash(netstat -ano)",
+      "Bash(findstr :8798)",
+      "Bash(taskkill /PID 4480 /F)",
+      "Bash(taskkill //F //PID 4480)",
+      "Bash(curl -s http://localhost:8798/vector/documents/1)",
+      "Bash(python3 main.py)",
+      "Bash(echo \"PID=$!\")",
+      "Bash(cmd //c \"where python\")"
     ]
   }
 }

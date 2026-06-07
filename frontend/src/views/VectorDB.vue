@@ -97,33 +97,37 @@
           <template #header>
             <span>文档上传</span>
           </template>
-          <el-upload
-            drag
-            action="#"
-            :show-file-list="false"
-            :before-upload="handleFileUpload"
-            :loading="uploadLoading"
-            style="text-align: center"
-          >
-            <el-icon class="el-icon--upload" style="font-size: 48px; color: #409eff"><UploadFilled /></el-icon>
-            <div style="margin-top: 16px; font-size: 16px; color: #606266">
-              将文件拖到此处，或<em style="color: #409eff">点击上传</em>
+          <div style="display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap">
+            <el-upload
+              drag
+              action="#"
+              :show-file-list="false"
+              :before-upload="handleFileUpload"
+              :loading="uploadLoading"
+              style="text-align: center; flex-shrink: 0"
+            >
+              <el-icon class="el-icon--upload" style="font-size: 48px; color: #409eff"><UploadFilled /></el-icon>
+              <div style="margin-top: 16px; font-size: 16px; color: #606266">
+                将文件拖到此处，或<em style="color: #409eff">点击上传</em>
+              </div>
+              <div style="margin-top: 8px; font-size: 12px; color: #909399">
+                支持 .txt, .md, .docx, .pdf 等格式
+              </div>
+            </el-upload>
+            <div style="display: flex; flex-direction: column; gap: 8px; min-width: 200px">
+              <el-select v-model="uploadKB" placeholder="选择知识库（可选）" clearable style="width: 200px">
+                <el-option v-for="kb in knowledgeBases" :key="kb.KnowledgeBaseId" :label="kb.Name" :value="kb.KnowledgeBaseId" />
+              </el-select>
+              <div v-if="currentUpload" style="font-size: 13px; color: #606266">
+                已上传：<strong>{{ currentUpload.name }}</strong>
+                （{{ formatFileSize(currentUpload.size) }}）
+              </div>
             </div>
-            <div style="margin-top: 8px; font-size: 12px; color: #909399">
-              支持 .txt, .md, .docx, .pdf 等格式
-            </div>
-          </el-upload>
-
-          <div style="margin-top: 12px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap">
-            <el-select v-model="uploadKB" placeholder="选择知识库（可选）" clearable style="width: 200px">
-              <el-option v-for="kb in knowledgeBases" :key="kb.KnowledgeBaseId" :label="kb.Name" :value="kb.KnowledgeBaseId" />
-            </el-select>
-            <span style="color: #909399; font-size: 12px">上传到指定知识库</span>
           </div>
 
           <el-tabs v-model="chunkMethodTab" style="margin-top: 16px">
             <el-tab-pane label="固定分块" name="fixed">
-              <div style="display: flex; gap: 24px; align-items: center; padding: 8px 0">
+              <div style="display: flex; gap: 24px; align-items: center; padding: 8px 0; flex-wrap: wrap">
                 <div>
                   <span style="font-size: 13px; margin-right: 8px">Chunk Size：</span>
                   <el-input-number v-model="uploadChunkSize" :min="100" :max="5000" :step="100" size="small" style="width: 130px" controls-position="right" />
@@ -132,35 +136,45 @@
                   <span style="font-size: 13px; margin-right: 8px">Chunk Overlap：</span>
                   <el-input-number v-model="uploadChunkOverlap" :min="0" :max="1000" :step="50" size="small" style="width: 120px" controls-position="right" />
                 </div>
+                <el-button type="primary" size="small" @click="previewFixedChunks" :disabled="!currentUpload" :loading="previewLoading">分块预览</el-button>
               </div>
-              <div v-if="uploadedFiles.length > 0" style="margin-top: 8px">
-                <el-divider content-position="left">已上传文档</el-divider>
-                <el-table :data="uploadedFiles" border style="width: 100%">
-                  <el-table-column prop="name" label="文件名" min-width="180" />
-                  <el-table-column prop="size" label="大小" width="100">
-                    <template #default="{ row }">
-                      {{ formatFileSize(row.size) }}
-                    </template>
-                  </el-table-column>
-                  <el-table-column prop="status" label="状态" width="110">
-                    <template #default="{ row }">
-                      <el-tag :type="row.status === 'success' ? 'success' : row.status === 'pending' ? 'warning' : row.status === 'committed' ? 'success' : 'danger'">
-                        {{ row.status === 'success' ? '已上传' : row.status === 'pending' ? '上传中...' : row.status === 'committed' ? '已入库' : '失败' }}
-                      </el-tag>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="操作" width="220" fixed="right">
-                    <template #default="{ row, $index }">
-                      <el-button link type="primary" size="small" :disabled="row.status !== 'success'" @click="handlePreviewChunks(row, $index)">分块预览</el-button>
-                      <el-button link type="primary" size="small" :disabled="row.status !== 'success'" @click="commitChunks(row, $index)">入库</el-button>
-                    </template>
-                  </el-table-column>
-                </el-table>
+
+              <!-- 双栏预览区域 -->
+              <div v-if="currentUpload" style="display: flex; gap: 16px; min-height: 400px; margin-top: 8px">
+                <div style="flex: 1; border: 1px solid #dcdfe6; border-radius: 4px; display: flex; flex-direction: column">
+                  <div style="background: #f5f7fa; padding: 8px 12px; font-weight: bold; border-bottom: 1px solid #dcdfe6">
+                    原文
+                    <span style="font-weight: normal; font-size: 12px; color: #909399; margin-left: 8px">{{ currentUpload.name }}</span>
+                  </div>
+                  <div style="padding: 12px; overflow-y: auto; white-space: pre-wrap; font-size: 13px; flex: 1; max-height: 500px">{{ currentUploadContent }}</div>
+                </div>
+                <div style="flex: 1; border: 1px solid #dcdfe6; border-radius: 4px; display: flex; flex-direction: column">
+                  <div style="background: #f5f7fa; padding: 8px 12px; font-weight: bold; border-bottom: 1px solid #dcdfe6">
+                    分块结果
+                    <span v-if="fixedPreviewChunks.length > 0" style="font-weight: normal; font-size: 12px; color: #909399; margin-left: 8px">共 {{ fixedPreviewChunks.length }} 块</span>
+                    <el-button type="primary" size="small" style="float: right" @click="commitFixedChunks" :loading="fixedCommitting" :disabled="fixedPreviewChunks.length === 0">文档入库</el-button>
+                  </div>
+                  <div style="padding: 12px; overflow-y: auto; flex: 1; max-height: 500px">
+                    <div v-if="fixedPreviewChunks.length === 0 && !previewLoading" style="padding: 40px 0; text-align: center; color: #909399; font-size: 14px">
+                      点击「分块预览」查看分块结果
+                    </div>
+                    <div v-if="previewLoading" style="padding: 40px 0; text-align: center; color: #909399; font-size: 14px">
+                      分块计算中...
+                    </div>
+                    <div v-for="(chunk, idx) in fixedPreviewChunks" :key="idx" style="margin-bottom: 12px; padding: 8px; background: #f0f9ff; border-radius: 4px; border-left: 3px solid #409eff">
+                      <div style="font-size: 12px; color: #909399; margin-bottom: 4px">#{{ idx + 1 }}（长度：{{ chunk.Length }}）</div>
+                      <div style="font-size: 13px; white-space: pre-wrap">{{ chunk.ChunkText }}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div v-else style="padding: 40px 0; text-align: center; color: #909399; font-size: 14px">
+                请先上传文档
               </div>
             </el-tab-pane>
             <el-tab-pane label="语义分块" name="semantic">
               <div style="padding: 8px 0">
-                <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 12px">
+                <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap">
                   <el-select v-model="semanticDocId" placeholder="选择已上传的文档" style="width: 300px">
                     <el-option v-for="f in uploadedFiles" :key="f.documentId" :label="f.name" :value="f.documentId" />
                   </el-select>
@@ -169,14 +183,14 @@
                 <div v-if="semanticResult" style="display: flex; gap: 16px; min-height: 400px">
                   <div style="flex: 1; border: 1px solid #dcdfe6; border-radius: 4px; display: flex; flex-direction: column">
                     <div style="background: #f5f7fa; padding: 8px 12px; font-weight: bold; border-bottom: 1px solid #dcdfe6">原文</div>
-                    <div style="padding: 12px; overflow-y: auto; white-space: pre-wrap; font-size: 13px; flex: 1">{{ semanticResult.original }}</div>
+                    <div style="padding: 12px; overflow-y: auto; white-space: pre-wrap; font-size: 13px; flex: 1; max-height: 500px">{{ semanticResult.original }}</div>
                   </div>
                   <div style="flex: 1; border: 1px solid #dcdfe6; border-radius: 4px; display: flex; flex-direction: column">
                     <div style="background: #f5f7fa; padding: 8px 12px; font-weight: bold; border-bottom: 1px solid #dcdfe6">
                       分块结果（共 {{ semanticResult.chunks.length }} 块）
                       <el-button type="primary" size="small" style="float: right" @click="commitSemanticChunks" :loading="semanticCommitting">文档入库</el-button>
                     </div>
-                    <div style="padding: 12px; overflow-y: auto; flex: 1">
+                    <div style="padding: 12px; overflow-y: auto; flex: 1; max-height: 500px">
                       <div v-for="(chunk, idx) in semanticResult.chunks" :key="idx" style="margin-bottom: 12px; padding: 8px; background: #f0f9ff; border-radius: 4px; border-left: 3px solid #409eff">
                         <div style="font-size: 12px; color: #909399; margin-bottom: 4px">#{{ idx + 1 }}（长度：{{ chunk.Length }}）</div>
                         <div style="font-size: 13px; white-space: pre-wrap">{{ chunk.ChunkText }}</div>
@@ -191,27 +205,6 @@
             </el-tab-pane>
           </el-tabs>
         </el-card>
-
-        <!-- 分块预览 Dialog -->
-        <el-dialog v-model="showPreviewDialog" title="分块预览" width="70%">
-          <div style="margin-bottom: 12px; color: #909399; font-size: 13px">
-            切块方式：<el-tag size="small" type="primary">固定切块</el-tag>
-            &nbsp;&nbsp;Chunk Size：{{ previewChunkSize }}&nbsp;&nbsp;Chunk Overlap：{{ previewChunkOverlap }}
-            &nbsp;&nbsp;共 <strong>{{ previewChunks.length }}</strong> 个分块
-          </div>
-          <el-table :data="previewChunks" border max-height="500">
-            <el-table-column prop="ChunkIndex" label="#" width="60" />
-            <el-table-column prop="Length" label="长度" width="80" />
-            <el-table-column prop="ChunkText" label="内容" min-width="300">
-              <template #default="{ row }">
-                <div style="max-height: 120px; overflow-y: auto; white-space: pre-wrap; font-size: 13px">{{ row.ChunkText }}</div>
-              </template>
-            </el-table-column>
-          </el-table>
-          <template #footer>
-            <el-button @click="showPreviewDialog = false">关闭</el-button>
-          </template>
-        </el-dialog>
       </el-tab-pane>
       
       <el-tab-pane label="QA" name="qa">
@@ -394,6 +387,13 @@ const previewChunks = ref([])
 const previewChunkSize = ref(0)
 const previewChunkOverlap = ref(0)
 
+// 新的上传双栏预览
+const currentUpload = ref(null)          // 当前选中的已上传文档 { name, size, documentId }
+const currentUploadContent = ref('')     // 当前文档原文内容
+const fixedPreviewChunks = ref([])       // 固定分块预览结果
+const previewLoading = ref(false)        // 分块预览加载中
+const fixedCommitting = ref(false)       // 固定分块入库中
+
 const config = ref({
   chunk_size: 1000,
   chunk_overlap: 200,
@@ -503,19 +503,9 @@ const saveDocKB = async (doc) => {
 
 const handleFileUpload = async (file) => {
   uploadLoading.value = true
-
-  const fileItem = {
-    name: file.name,
-    size: file.size,
-    chunkMethod: chunkMethodTab.value,
-    chunkSize: uploadChunkSize.value,
-    chunkOverlap: uploadChunkOverlap.value,
-    documentId: null,
-    status: 'pending'
-  }
+  fixedPreviewChunks.value = []
   semanticResult.value = null
-  uploadedFiles.value.push(fileItem)
-  const fileIndex = uploadedFiles.value.length - 1
+  currentUploadContent.value = ''
 
   const formData = new FormData()
   formData.append('file', file)
@@ -525,19 +515,21 @@ const handleFileUpload = async (file) => {
 
   try {
     const res = await axios.post('http://localhost:8798/vector/documents/upload', formData)
-    uploadedFiles.value[fileIndex].status = 'success'
-    uploadedFiles.value[fileIndex].documentId = res.data.documentId
+    const docId = res.data.documentId
+    // 保存到上传列表中（语义分块用）
+    uploadedFiles.value.push({
+      name: file.name,
+      size: file.size,
+      documentId: docId,
+    })
+    // 设为当前选中文档
+    currentUpload.value = { name: file.name, size: file.size, documentId: docId }
+    // 加载文档内容
+    const contentRes = await axios.get(`http://localhost:8798/vector/documents/${docId}`)
+    currentUploadContent.value = contentRes.data.Content || ''
   } catch (error) {
-    console.error('Upload request failed, will retry check after 10s:', error)
-    setTimeout(async () => {
-      try {
-        const res = await axios.get('http://localhost:8798/vector/documents')
-        const found = res.data.documents.some(d => d.Title === file.name)
-        uploadedFiles.value[fileIndex].status = found ? 'success' : 'error'
-      } catch {
-        uploadedFiles.value[fileIndex].status = 'error'
-      }
-    }, 10000)
+    console.error('Upload failed:', error)
+    ElMessage.error('上传失败: ' + (error.response?.data?.message || error.message))
   } finally {
     uploadLoading.value = false
     loadDocuments()
@@ -545,34 +537,43 @@ const handleFileUpload = async (file) => {
   return false
 }
 
-const handlePreviewChunks = async (row, index) => {
+const previewFixedChunks = async () => {
+  if (!currentUpload.value) return
+  previewLoading.value = true
   try {
-    const res = await axios.post(`http://localhost:8798/vector/documents/${row.documentId}/preview-chunks`, {
-      chunk_size: row.chunkSize,
-      chunk_overlap: row.chunkOverlap,
+    const res = await axios.post(`http://localhost:8798/vector/documents/${currentUpload.value.documentId}/preview-chunks`, {
+      chunk_size: uploadChunkSize.value,
+      chunk_overlap: uploadChunkOverlap.value,
     })
-    previewChunks.value = res.data.chunks
-    previewChunkSize.value = row.chunkSize
-    previewChunkOverlap.value = row.chunkOverlap
-    showPreviewDialog.value = true
+    fixedPreviewChunks.value = res.data.chunks
   } catch (error) {
     console.error('Error previewing chunks:', error)
-    ElMessage.error('分块预览失败')
+    ElMessage.error('分块预览失败: ' + (error.response?.data?.message || error.message))
+  } finally {
+    previewLoading.value = false
   }
 }
 
-const commitChunks = async (row, index) => {
+const commitFixedChunks = async () => {
+  if (!currentUpload.value || fixedPreviewChunks.value.length === 0) return
+  fixedCommitting.value = true
   try {
-    const res = await axios.post(`http://localhost:8798/vector/documents/${row.documentId}/commit-chunks`, {
-      chunk_size: row.chunkSize,
-      chunk_overlap: row.chunkOverlap,
+    const res = await axios.post(`http://localhost:8798/vector/documents/${currentUpload.value.documentId}/commit-chunks`, {
+      chunk_size: uploadChunkSize.value,
+      chunk_overlap: uploadChunkOverlap.value,
     })
-    uploadedFiles.value[index].status = 'committed'
     ElMessage.success(res.data.message)
+    // 从上传列表中移除
+    uploadedFiles.value = uploadedFiles.value.filter(f => f.documentId !== currentUpload.value.documentId)
+    currentUpload.value = null
+    currentUploadContent.value = ''
+    fixedPreviewChunks.value = []
     loadDocuments()
   } catch (error) {
     console.error('Error committing chunks:', error)
     ElMessage.error('入库失败: ' + (error.response?.data?.message || error.message))
+  } finally {
+    fixedCommitting.value = false
   }
 }
 
@@ -603,6 +604,8 @@ const commitSemanticChunks = async () => {
       chunks: chunkTexts,
     })
     ElMessage.success(res.data.message)
+    // 从上传列表中移除
+    uploadedFiles.value = uploadedFiles.value.filter(f => f.documentId !== semanticDocId.value)
     // 重置语义分块界面
     semanticDocId.value = null
     semanticResult.value = null

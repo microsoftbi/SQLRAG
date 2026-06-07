@@ -382,6 +382,18 @@ async def update_document(document_id: int, data: Dict[str, Any], conn=Depends(g
         return JSONResponse(status_code=500, content={"message": f"更新失败: {str(e)}"})
 
 
+@app.get("/vector/documents/{document_id}")
+async def get_document(document_id: int, conn=Depends(get_vector_db_connection)):
+    """获取单个文档的详细信息"""
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM Documents WHERE DocumentId = ? AND IsDeleted = 0", (document_id,))
+    row = cursor.fetchone()
+    if not row:
+        return JSONResponse(status_code=404, content={"message": "文档不存在"})
+    columns = [column[0] for column in cursor.description]
+    return dict(zip(columns, row))
+
+
 @app.get("/vector/documents/{document_id}/chunks")
 async def get_document_chunks(document_id: int, conn=Depends(get_vector_db_connection)):
     """获取指定文档的所有分块"""
