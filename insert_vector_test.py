@@ -76,7 +76,7 @@ print("✅ VECTOR INDEX 已删除")
 vector_json = json.dumps(vector)
 insert_sql = """
     DECLARE @json_str NVARCHAR(MAX) = CONVERT(NVARCHAR(MAX), ?);
-    DECLARE @v VECTOR(768) = CAST(@json_str AS VECTOR(768));
+    DECLARE @v VECTOR(1024) = CAST(@json_str AS VECTOR(1024));
     INSERT INTO VectorIndexTEST (ChunkId, EmbeddingVector, CreatedAt)
     VALUES (?, @v, GETDATE());
 """

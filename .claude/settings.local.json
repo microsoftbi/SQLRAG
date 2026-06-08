@@ -33,7 +33,10 @@
       "Bash(curl -s http://localhost:8798/vector/documents/1)",
       "Bash(python3 main.py)",
       "Bash(echo \"PID=$!\")",
-      "Bash(cmd //c \"where python\")"
+      "Bash(cmd //c \"where python\")",
+      "WebSearch",
+      "WebFetch(domain:devblogs.microsoft.com)",
+      "WebFetch(domain:www.mssqltips.com)"
     ]
   }
 }

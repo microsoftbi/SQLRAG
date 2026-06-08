@@ -327,7 +327,7 @@
               <div style="color: #909399; font-size: 12px; margin-top: 4px">相邻文本块之间的重叠字符数</div>
             </el-form-item>
             <el-form-item label="Embedding Model（嵌入模型）">
-              <el-input v-model="config.embedding_model" placeholder="nomic-embed-text" />
+              <el-input v-model="config.embedding_model" placeholder="bge-m3" />
               <div style="color: #909399; font-size: 12px; margin-top: 4px">Ollama 上的文本嵌入模型名称</div>
             </el-form-item>
           </el-form>
@@ -338,6 +338,33 @@
             show-icon
             :closable="true"
             @close="configMessage = ''"
+            style="margin-top: 16px"
+          />
+        </el-card>
+      </el-tab-pane>
+      <!-- 索引管理 -->
+      <el-tab-pane label="索引管理" name="index">
+        <el-card>
+          <template #header>
+            <div class="card-header">
+              <span>向量索引管理</span>
+            </div>
+          </template>
+          <div style="display: flex; gap: 16px; flex-wrap: wrap">
+            <el-button type="success" @click="handleCreateIndex" :loading="indexLoading">
+              创建索引
+            </el-button>
+            <el-button type="danger" @click="handleDropIndex" :loading="indexLoading">
+              删除索引
+            </el-button>
+          </div>
+          <el-alert
+            v-if="indexMessage"
+            :title="indexMessage"
+            :type="indexMessageType"
+            show-icon
+            :closable="true"
+            @close="indexMessage = ''"
             style="margin-top: 16px"
           />
         </el-card>
@@ -397,7 +424,7 @@ const fixedCommitting = ref(false)       // 固定分块入库中
 const config = ref({
   chunk_size: 1000,
   chunk_overlap: 200,
-  embedding_model: 'nomic-embed-text',
+  embedding_model: 'quentinz/bge-large-zh-v1.5:latest',
 })
 const configSaving = ref(false)
 const configMessage = ref('')
@@ -431,6 +458,41 @@ const saveConfig = async () => {
     configMessageType.value = 'error'
   } finally {
     configSaving.value = false
+  }
+}
+
+// 索引管理
+const indexLoading = ref(false)
+const indexMessage = ref('')
+const indexMessageType = ref('success')
+
+const handleCreateIndex = async () => {
+  indexLoading.value = true
+  indexMessage.value = ''
+  try {
+    const res = await axios.post('http://localhost:8798/vector/index/create')
+    indexMessage.value = res.data.message
+    indexMessageType.value = 'success'
+  } catch (error) {
+    indexMessage.value = '创建失败: ' + (error.response?.data?.message || error.message)
+    indexMessageType.value = 'error'
+  } finally {
+    indexLoading.value = false
+  }
+}
+
+const handleDropIndex = async () => {
+  indexLoading.value = true
+  indexMessage.value = ''
+  try {
+    const res = await axios.post('http://localhost:8798/vector/index/drop')
+    indexMessage.value = res.data.message
+    indexMessageType.value = 'success'
+  } catch (error) {
+    indexMessage.value = '删除失败: ' + (error.response?.data?.message || error.message)
+    indexMessageType.value = 'error'
+  } finally {
+    indexLoading.value = false
   }
 }
 

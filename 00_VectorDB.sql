@@ -1,7 +1,7 @@
 -- ============================================
 -- SQLServer 向量数据库架构初始化脚本
 -- 用于构建 RAG (Retrieval Augmented Generation) 系统
--- 使用 Ollama 本地部署 nomic-embed-text 模型 (768维)
+-- 使用 Ollama 本地部署 bge-m3 模型 (1024维)
 -- SQL Server 2025+ 原生 VECTOR 类型支持
 -- ============================================
 
@@ -102,13 +102,13 @@ GO
 
 -- ============================================
 -- 向量索引表 - 存储文本嵌入向量
--- nomic-embed-text: 768 维向量
+-- bge-m3: 1024 维向量
 -- SQL Server 2025+ 原生 VECTOR 类型支持
 -- ============================================
 CREATE TABLE VectorIndex (
     VectorId INT IDENTITY(1,1) PRIMARY KEY,
     ChunkId BIGINT NOT NULL UNIQUE,
-    EmbeddingVector VECTOR(768) NOT NULL,
+    EmbeddingVector VECTOR(1024) NOT NULL,
     CreatedAt DATETIME2 DEFAULT GETDATE(),
     IsDeleted BIT DEFAULT 0,
     FOREIGN KEY (ChunkId) REFERENCES TextChunks(ChunkId)

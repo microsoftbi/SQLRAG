@@ -439,7 +439,7 @@ def create_chunks_from_content(document_id: int, content: str, conn,
     for i, chunk_text in enumerate(texts):
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO TextChunks (DocumentId, ChunkIndex, ChunkText, CreatedAt) VALUES (?, ?, ?, GETDATE())",
+            "INSERT INTO TextChunks (DocumentId, ChunkIndex, ChunkText, CreatedAt, IsDeleted) VALUES (?, ?, ?, GETDATE(), 0)",
             (document_id, i, chunk_text)
         )
         conn.commit()
@@ -461,41 +461,67 @@ def create_chunks_from_content(document_id: int, content: str, conn,
 
 
 def get_embedding(text: str) -> List[float]:
-    """调用 Ollama /api/embeddings 获取文本的嵌入向量"""
+    """使用 Ollama Python 客户端获取文本的嵌入向量"""
     if not text or not text.strip():
         raise Exception("不能为空文本生成嵌入向量")
 
     try:
-        import urllib.request
-        import json
+        import math
+        import ollama
 
-        url = f"{settings.ollama_base_url.rstrip('/')}/api/embeddings"
-        payload = json.dumps({
-            "model": settings.embedding_model,
-            "prompt": text,
-        }).encode()
+        client = ollama.Client(host=settings.ollama_base_url.rstrip('/'))
 
-        req = urllib.request.Request(
-            url, data=payload,
-            headers={"Content-Type": "application/json"}
-        )
+        def request_embedding(input_text: str) -> List[float]:
+            response = client.embeddings(
+                model=settings.embedding_model,
+                prompt=input_text,
+            )
+            vector = response.get("embedding", [])
+            if not vector:
+                raise Exception("Ollama 返回了空的嵌入向量")
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read())
+            # 修复部分模型偶发的 NaN 值问题
+            if any(isinstance(v, float) and math.isnan(v) for v in vector):
+                nan_count = sum(1 for v in vector if isinstance(v, float) and math.isnan(v))
+                logging.warning(f"Embedding 中包含 {nan_count} 个 NaN 值，已替换为 0.0")
+                vector = [0.0 if (isinstance(v, float) and math.isnan(v)) else v for v in vector]
 
-        vector = data.get("embedding", [])
-        if not vector:
-            raise Exception("Ollama 返回了空的嵌入向量")
+            return vector
 
-        return vector
-    except urllib.request.HTTPError as e:
-        error_body = e.read().decode()
-        logging.error(f"Ollama HTTP error {e.code}: {error_body}")
-        raise Exception(f"Ollama 返回错误 ({e.code}): {error_body}")
-    except urllib.request.URLError:
-        logging.error(f"Cannot connect to Ollama at {settings.ollama_base_url}")
-        raise Exception(f"无法连接到 Ollama，请确保 Ollama 已启动（{settings.ollama_base_url}）")
+        retry_lengths = [None, 1200, 800, 500, 300, 150]
+        last_error = None
+        tried_lengths = set()
+
+        for max_chars in retry_lengths:
+            input_text = text if max_chars is None else text[:max_chars]
+            if len(input_text) in tried_lengths:
+                continue
+            tried_lengths.add(len(input_text))
+
+            try:
+                if max_chars is not None:
+                    logging.warning(
+                        f"Embedding input too long, retrying with first {len(input_text)} chars"
+                    )
+                return request_embedding(input_text)
+            except Exception as e:
+                error_message = str(e)
+                last_error = e
+                if "input length exceeds the context length" not in error_message:
+                    raise
+                logging.warning(
+                    f"Embedding input length {len(input_text)} chars still exceeds context length"
+                )
+
+        raise last_error
+
+    except ImportError:
+        raise Exception("ollama library not installed, please install: pip install ollama")
     except Exception as e:
+        error_message = str(e)
+        if "connection" in error_message.lower() or "connect" in error_message.lower():
+            logging.error(f"Cannot connect to Ollama at {settings.ollama_base_url}: {e}")
+            raise Exception(f"无法连接到 Ollama，请确保 Ollama 已启动（{settings.ollama_base_url}）")
         logging.error(f"Embedding error: {e}")
         raise
 
@@ -504,24 +530,47 @@ def embed_chunks_for_document(document_id: int, conn) -> Dict:
     """为指定文档的所有未嵌入分块生成向量并存入 VectorIndex"""
     cursor = conn.cursor()
 
+    cursor.execute("""
+        SELECT
+            COUNT(*) AS total_chunks,
+            SUM(CASE WHEN ISNULL(IsDeleted, 0) = 0 THEN 1 ELSE 0 END) AS active_chunks
+        FROM TextChunks
+        WHERE DocumentId = ?
+    """, (document_id,))
+    chunk_stats = cursor.fetchone()
+
+    cursor.execute("""
+        SELECT
+            COUNT(*) AS vector_count,
+            SUM(CASE WHEN v.IsDeleted = 0 THEN 1 ELSE 0 END) AS active_vector_count
+        FROM VectorIndex v
+        JOIN TextChunks c ON v.ChunkId = c.ChunkId
+        WHERE c.DocumentId = ?
+    """, (document_id,))
+    vector_stats = cursor.fetchone()
+
+    logging.info(
+        f"Embedding document {document_id}: TextChunks total={chunk_stats[0]}, active={chunk_stats[1]}, "
+        f"VectorIndex total={vector_stats[0]}, active={vector_stats[1]}"
+    )
+
     # 查询还没有嵌入向量的分块
     cursor.execute("""
         SELECT c.ChunkId, c.ChunkText
         FROM TextChunks c
-        LEFT JOIN VectorIndex v ON c.ChunkId = v.ChunkId
-        WHERE c.DocumentId = ? AND c.IsDeleted = 0 AND v.ChunkId IS NULL
+        LEFT JOIN VectorIndex v ON c.ChunkId = v.ChunkId AND v.IsDeleted = 0
+        WHERE c.DocumentId = ? AND ISNULL(c.IsDeleted, 0) = 0 AND v.ChunkId IS NULL
         ORDER BY c.ChunkIndex
     """, (document_id,))
     rows = cursor.fetchall()
 
+    logging.info(f"Embedding document {document_id}: found {len(rows)} chunks without vectors")
+
     if not rows:
         return {"message": "所有分块已嵌入，无需重复处理", "embedded": 0}
 
-    # VECTOR INDEX 会阻塞 INSERT，先删除，插入完成后重建
-    cursor.execute("DROP INDEX IF EXISTS idx_content_vector ON VectorIndex")
-    conn.commit()
-
     embedded_count = 0
+    failed_errors = []
     for chunk_id, chunk_text in rows:
         if not chunk_text or not chunk_text.strip():
             logging.warning(f"Skipping empty chunk {chunk_id}")
@@ -531,35 +580,39 @@ def embed_chunks_for_document(document_id: int, conn) -> Dict:
             vector_json = json.dumps(vector)
             cursor.execute("""
                 DECLARE @json_str NVARCHAR(MAX) = CONVERT(NVARCHAR(MAX), ?);
-                DECLARE @v VECTOR(768) = CAST(@json_str AS VECTOR(768));
-                INSERT INTO VectorIndex (ChunkId, EmbeddingVector, CreatedAt)
-                VALUES (?, @v, GETDATE());
-            """, (vector_json, chunk_id))
+                DECLARE @v VECTOR(1024) = CAST(@json_str AS VECTOR(1024));
+
+                IF EXISTS (SELECT 1 FROM VectorIndex WHERE ChunkId = ?)
+                BEGIN
+                    UPDATE VectorIndex
+                    SET EmbeddingVector = @v,
+                        CreatedAt = GETDATE(),
+                        IsDeleted = 0
+                    WHERE ChunkId = ?;
+                END
+                ELSE
+                BEGIN
+                    INSERT INTO VectorIndex (ChunkId, EmbeddingVector, CreatedAt, IsDeleted)
+                    VALUES (?, @v, GETDATE(), 0);
+                END
+            """, (vector_json, chunk_id, chunk_id, chunk_id))
             conn.commit()
             embedded_count += 1
             logging.info(f"Embedded chunk {chunk_id} for document {document_id}")
         except Exception as e:
-            logging.error(f"Failed to embed chunk {chunk_id}: {e}")
+            error_msg = str(e)
+            logging.error(f"Failed to embed chunk {chunk_id}: {error_msg}")
+            failed_errors.append(f"Chunk {chunk_id}: {error_msg}")
             conn.rollback()
-            raise
-
-    # 重建 VECTOR INDEX（必须在一个独立的 autocommit 连接中执行）
-    try:
-        from config import get_db_connection_string
-        rebuild_conn = pyodbc.connect(get_db_connection_string("VectorDB"), autocommit=True)
-        rebuild_cursor = rebuild_conn.cursor()
-        rebuild_cursor.execute("""
-            CREATE VECTOR INDEX idx_content_vector
-            ON dbo.VectorIndex(EmbeddingVector)
-            WITH (METRIC = 'cosine');
-        """)
-        rebuild_conn.close()
-        logging.info(f"Vector index rebuilt after inserting {embedded_count} chunks")
-    except Exception as e:
-        logging.warning(f"Vector index rebuild failed: {e}")
+            continue
 
     logging.info(f"Embedded {embedded_count} chunks for document {document_id}")
-    return {"message": f"成功嵌入 {embedded_count} 个分块", "embedded": embedded_count}
+    if embedded_count == 0 and failed_errors:
+        first_error = failed_errors[0]
+        if "vector index" in first_error.lower():
+            raise Exception("向量索引存在时不能写入 VectorIndex。请先在 VectorDB -> 索引管理 中点击 DROP INDEX，再执行文档入库。")
+        raise Exception(f"所有分块嵌入失败，首个错误: {first_error}")
+    return {"message": f"成功嵌入 {embedded_count} 个分块", "embedded": embedded_count, "failed": len(failed_errors)}
 
 
 @app.post("/vector/documents/{document_id}/embed")
@@ -806,13 +859,14 @@ async def commit_document_chunks(document_id: int, data: Dict[str, Any], conn=De
         embed_result = embed_chunks_for_document(document_id, conn)
         embedded = embed_result.get("embedded", 0)
     except Exception as e:
-        logging.warning(f"Embedding failed during commit: {e}")
-        embedded = 0
+        logging.error(f"Embedding failed during commit: {e}")
+        return JSONResponse(status_code=500, content={"message": f"分块已创建，但向量嵌入失败: {str(e)}"})
 
     return {
         "message": f"已创建 {len(chunks)} 个分块，已嵌入 {embedded} 个向量",
         "total_chunks": len(chunks),
         "embedded": embedded,
+        "failed": embed_result.get("failed", 0),
     }
 
 
@@ -840,7 +894,7 @@ async def commit_document_chunks_raw(document_id: int, data: Dict[str, Any], con
     # 入库分块
     for i, chunk_text in enumerate(chunks_text):
         cursor.execute(
-            "INSERT INTO TextChunks (DocumentId, ChunkIndex, ChunkText, CreatedAt) VALUES (?, ?, ?, GETDATE())",
+            "INSERT INTO TextChunks (DocumentId, ChunkIndex, ChunkText, CreatedAt, IsDeleted) VALUES (?, ?, ?, GETDATE(), 0)",
             (document_id, i, chunk_text)
         )
         conn.commit()
@@ -850,13 +904,14 @@ async def commit_document_chunks_raw(document_id: int, data: Dict[str, Any], con
         embed_result = embed_chunks_for_document(document_id, conn)
         embedded = embed_result.get("embedded", 0)
     except Exception as e:
-        logging.warning(f"Embedding failed during raw commit: {e}")
-        embedded = 0
+        logging.error(f"Embedding failed during raw commit: {e}")
+        return JSONResponse(status_code=500, content={"message": f"分块已入库，但向量嵌入失败: {str(e)}"})
 
     return {
         "message": f"已入库 {len(chunks_text)} 个分块，已嵌入 {embedded} 个向量",
         "total_chunks": len(chunks_text),
         "embedded": embedded,
+        "failed": embed_result.get("failed", 0),
     }
 
 
@@ -1057,46 +1112,92 @@ async def delete_document(document_id: int, conn=Depends(get_vector_db_connectio
         return JSONResponse(status_code=500, content={"message": f"删除失败: {str(e)}"})
 
 
+@app.post("/vector/index/create")
+async def create_vector_index():
+    """创建 VECTOR INDEX"""
+    try:
+        from config import get_db_connection_string
+        # VECTOR INDEX 必须在 autocommit 连接中执行
+        rebuild_conn = pyodbc.connect(get_db_connection_string("VectorDB"), autocommit=True)
+        rebuild_cursor = rebuild_conn.cursor()
+        rebuild_cursor.execute("""
+            CREATE VECTOR INDEX idx_content_vector
+            ON dbo.VectorIndex(EmbeddingVector)
+            WITH (METRIC = 'cosine');
+        """)
+        rebuild_conn.close()
+        logging.info("Vector index created successfully")
+        return {"message": "向量索引创建成功"}
+    except Exception as e:
+        logging.error(f"Error creating vector index: {e}")
+        return JSONResponse(status_code=500, content={"message": f"向量索引创建失败: {str(e)}"})
+
+
+@app.post("/vector/index/drop")
+async def drop_vector_index(conn=Depends(get_vector_db_connection)):
+    """删除 VECTOR INDEX"""
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DROP INDEX IF EXISTS idx_content_vector ON VectorIndex")
+        conn.commit()
+        logging.info("Vector index dropped successfully")
+        return {"message": "向量索引已删除"}
+    except Exception as e:
+        logging.error(f"Error dropping vector index: {e}")
+        return JSONResponse(status_code=500, content={"message": f"删除向量索引失败: {str(e)}"})
+
+
 @app.post("/vector/qa")
 async def vector_qa(data: Dict[str, Any], conn=Depends(get_vector_db_connection)):
     question = data.get("question", "")
-    
+
     if not question:
         return {"answer": "请输入问题", "sources": []}
 
     try:
         cursor = conn.cursor()
-        
-        # 检索命中的文档块（基于关键词匹配，后续可替换为向量相似度搜索）
+
+        # 生成问题的嵌入向量
+        query_vector = get_embedding(question)
+        query_vector_json = json.dumps(query_vector)
+
+        # 使用 SQL Server 2025 VECTOR_SEARCH 进行向量相似度检索
         cursor.execute("""
+            DECLARE @json_str NVARCHAR(MAX) = CONVERT(NVARCHAR(MAX), ?);
+            DECLARE @v VECTOR(1024) = CAST(@json_str AS VECTOR(1024));
+
             SELECT c.ChunkId, c.DocumentId, c.ChunkIndex, c.ChunkText, d.Title
-            FROM TextChunks c
+            FROM VECTOR_SEARCH(
+                TABLE = VectorIndex AS v,
+                COLUMN = EmbeddingVector,
+                SIMILAR_TO = @v,
+                METRIC = 'cosine',
+                TOP_N = 5
+            )
+            JOIN TextChunks c ON v.ChunkId = c.ChunkId
             JOIN Documents d ON c.DocumentId = d.DocumentId
-            WHERE c.IsDeleted = 0 AND d.IsDeleted = 0
-            AND c.ChunkText LIKE ?
-            ORDER BY c.DocumentId, c.ChunkIndex
-            OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY
-        """, (f"%{question}%",))
-        
+            WHERE ISNULL(c.IsDeleted, 0) = 0 AND d.IsDeleted = 0
+        """, (query_vector_json,))
+
         columns = [column[0] for column in cursor.description]
         sources = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        
-        # 如果没有命中，用关键词搜索文档标题作为备选
+
+        # 如果向量检索没有命中，用关键词搜索文档标题作为备选
         if not sources:
             cursor.execute("""
                 SELECT TOP 3 c.ChunkId, c.DocumentId, c.ChunkIndex, c.ChunkText, d.Title
                 FROM Documents d
                 JOIN TextChunks c ON d.DocumentId = c.DocumentId
-                WHERE d.IsDeleted = 0 AND c.IsDeleted = 0
+                WHERE d.IsDeleted = 0 AND ISNULL(c.IsDeleted, 0) = 0
                 AND (d.Title LIKE ? OR d.Source LIKE ?)
                 ORDER BY c.DocumentId, c.ChunkIndex
             """, (f"%{question}%", f"%{question}%"))
             columns = [column[0] for column in cursor.description]
             sources = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        
+
         # 使用LLM基于检索到的内容回答问题
         answer = generate_answer_with_sources(question, sources)
-        
+
         return {
             "answer": answer,
             "sources": sources
@@ -1276,39 +1377,33 @@ def legacy_graph_qa(cursor, question: str) -> dict:
 
 
 def find_relationship_between_nodes(cursor, name1, name2):
-    """查找两个节点之间的直接关系"""
+    """查找两个节点之间的直接关系（使用 MATCH 图查询）"""
     try:
-        node1_id = get_node_graph_id(cursor, name1)
-        node2_id = get_node_graph_id(cursor, name2)
-
-        if not node1_id or not node2_id:
-            return f"未能找到实体 '{name1}' 或 '{name2}' 的信息"
-
-        edge_tables = [
-            "WorksAt", "SubordinateOf", "Investigates", "SuspectOf",
-            "PerpetratorOf", "VictimOf", "LocatedIn", "Owns", "Found",
-            "TransferredTo", "Witness", "RelatedTo", "ConflictWith",
-            "CooperatesWith", "ReportedBy", "ConnectedTo", "OccursAt",
-            "EvidenceOf", "CoversUp", "CommunicatesWith"
+        # Person -> Person 边表
+        person_edge_tables = [
+            "SubordinateOf", "RelatedTo", "ConflictWith",
+            "CooperatesWith", "CommunicatesWith"
         ]
 
         relationships = []
-        for table in edge_tables:
-            cursor.execute(f"""
-                SELECT * FROM {table}
-                WHERE STRING_ESCAPE($from_id, 'json') = STRING_ESCAPE(?, 'json')
-                  AND STRING_ESCAPE($to_id, 'json') = STRING_ESCAPE(?, 'json')
-            """, (node1_id, node2_id))
-            if cursor.fetchone():
-                relationships.append(f"{name1} ->({table})-> {name2}")
 
+        # 方向: name1 ->(edge)-> name2
+        for edge_table in person_edge_tables:
             cursor.execute(f"""
-                SELECT * FROM {table}
-                WHERE STRING_ESCAPE($from_id, 'json') = STRING_ESCAPE(?, 'json')
-                  AND STRING_ESCAPE($to_id, 'json') = STRING_ESCAPE(?, 'json')
-            """, (node2_id, node1_id))
+                SELECT 1 FROM Person p1, {edge_table} e, Person p2
+                WHERE MATCH(p1-(e)->p2) AND p1.name = ? AND p2.name = ?
+            """, (name1, name2))
             if cursor.fetchone():
-                relationships.append(f"{name2} ->({table})-> {name1}")
+                relationships.append(f"{name1} ->({edge_table})-> {name2}")
+
+        # 方向: name2 ->(edge)-> name1
+        for edge_table in person_edge_tables:
+            cursor.execute(f"""
+                SELECT 1 FROM Person p1, {edge_table} e, Person p2
+                WHERE MATCH(p1-(e)->p2) AND p1.name = ? AND p2.name = ?
+            """, (name2, name1))
+            if cursor.fetchone():
+                relationships.append(f"{name2} ->({edge_table})-> {name1}")
 
         if relationships:
             return f"{name1} 和 {name2} 之间的关系：\n" + "\n".join(relationships)
@@ -1320,46 +1415,14 @@ def find_relationship_between_nodes(cursor, name1, name2):
 
 
 def find_related_entities(cursor, entity_name):
-    """查找与某个实体相关联的所有实体"""
+    """查找与某个实体相关联的所有实体（使用 MATCH 图查询）"""
     try:
-        node_id = get_node_graph_id(cursor, entity_name)
-        if not node_id:
-            return f"未能找到实体 '{entity_name}' 的信息"
-
-        edge_tables = [
-            "WorksAt", "SubordinateOf", "Investigates", "SuspectOf",
-            "PerpetratorOf", "VictimOf", "LocatedIn", "Owns", "Found",
-            "TransferredTo", "Witness", "RelatedTo", "ConflictWith",
-            "CooperatesWith", "ReportedBy", "ConnectedTo", "OccursAt",
-            "EvidenceOf", "CoversUp", "CommunicatesWith"
-        ]
-
-        related = {}
-        for table in edge_tables:
-            cursor.execute(f"""
-                SELECT $to_id FROM {table} WHERE STRING_ESCAPE($from_id, 'json') = STRING_ESCAPE(?, 'json')
-            """, (node_id,))
-            for row in cursor.fetchall():
-                target_name = get_node_name_from_graph_id(cursor, str(row[0]))
-                if target_name:
-                    if target_name not in related:
-                        related[target_name] = []
-                    related[target_name].append(f"({table})")
-
-            cursor.execute(f"""
-                SELECT $from_id FROM {table} WHERE STRING_ESCAPE($to_id, 'json') = STRING_ESCAPE(?, 'json')
-            """, (node_id,))
-            for row in cursor.fetchall():
-                source_name = get_node_name_from_graph_id(cursor, str(row[0]))
-                if source_name:
-                    if source_name not in related:
-                        related[source_name] = []
-                    related[source_name].append(f"({table})")
+        related = _find_related_via_match(cursor, entity_name)
 
         if related:
             result = f"与 '{entity_name}' 相关联的实体：\n"
             for name, rels in related.items():
-                result += f"- {name}: {', '.join(rels)}\n"
+                result += f"- {name}: {', '.join(f'({r})' for r in rels)}\n"
             return result
         else:
             return f"没有找到与 '{entity_name}' 相关联的实体"
@@ -1368,68 +1431,118 @@ def find_related_entities(cursor, entity_name):
         return f"查询关联实体时出错: {str(e)}"
 
 
+def _find_related_via_match(cursor, person_name):
+    """使用 MATCH 查询指定人物的所有关联实体（返回 {实体名: [边名]}）"""
+    # 23 个 ? 占位符，全部传 person_name
+    cursor.execute("""
+        WITH RelatedCTE AS (
+            -- ===== 出向边 (Person -> 其他节点) =====
+
+            -- Person -> Person
+            SELECT p2.name AS related_name, 'SubordinateOf' AS edge_name
+            FROM Person p1, SubordinateOf e, Person p2
+            WHERE MATCH(p1-(e)->p2) AND p1.name = ?
+            UNION SELECT p2.name, 'RelatedTo'
+            FROM Person p1, RelatedTo e, Person p2
+            WHERE MATCH(p1-(e)->p2) AND p1.name = ?
+            UNION SELECT p2.name, 'ConflictWith'
+            FROM Person p1, ConflictWith e, Person p2
+            WHERE MATCH(p1-(e)->p2) AND p1.name = ?
+            UNION SELECT p2.name, 'CooperatesWith'
+            FROM Person p1, CooperatesWith e, Person p2
+            WHERE MATCH(p1-(e)->p2) AND p1.name = ?
+            UNION SELECT p2.name, 'CommunicatesWith'
+            FROM Person p1, CommunicatesWith e, Person p2
+            WHERE MATCH(p1-(e)->p2) AND p1.name = ?
+
+            -- Person -> CaseNode
+            UNION SELECT c.name, 'Investigates'
+            FROM Person p1, Investigates e, CaseNode c
+            WHERE MATCH(p1-(e)->c) AND p1.name = ?
+            UNION SELECT c.name, 'SuspectOf'
+            FROM Person p1, SuspectOf e, CaseNode c
+            WHERE MATCH(p1-(e)->c) AND p1.name = ?
+            UNION SELECT c.name, 'PerpetratorOf'
+            FROM Person p1, PerpetratorOf e, CaseNode c
+            WHERE MATCH(p1-(e)->c) AND p1.name = ?
+            UNION SELECT c.name, 'VictimOf'
+            FROM Person p1, VictimOf e, CaseNode c
+            WHERE MATCH(p1-(e)->c) AND p1.name = ?
+            UNION SELECT c.name, 'CoversUp'
+            FROM Person p1, CoversUp e, CaseNode c
+            WHERE MATCH(p1-(e)->c) AND p1.name = ?
+
+            -- Person -> Organization
+            UNION SELECT o.name, 'WorksAt'
+            FROM Person p1, WorksAt e, Organization o
+            WHERE MATCH(p1-(e)->o) AND p1.name = ?
+
+            -- Person -> Item
+            UNION SELECT i.name, 'Owns'
+            FROM Person p1, Owns e, Item i
+            WHERE MATCH(p1-(e)->i) AND p1.name = ?
+            UNION SELECT i.name, 'Found'
+            FROM Person p1, Found e, Item i
+            WHERE MATCH(p1-(e)->i) AND p1.name = ?
+
+            -- Person -> Location
+            UNION SELECT l.name, 'LocatedIn'
+            FROM Person p1, LocatedIn e, Location l
+            WHERE MATCH(p1-(e)->l) AND p1.name = ?
+
+            -- Person -> Event
+            UNION SELECT ev.name, 'Witness'
+            FROM Person p1, Witness e, Event ev
+            WHERE MATCH(p1-(e)->ev) AND p1.name = ?
+
+            -- ===== 入向边 (其他节点 -> Person) =====
+
+            -- Person <- Person
+            UNION SELECT p2.name, 'SubordinateOf'
+            FROM Person p1, SubordinateOf e, Person p2
+            WHERE MATCH(p2-(e)->p1) AND p1.name = ?
+            UNION SELECT p2.name, 'RelatedTo'
+            FROM Person p1, RelatedTo e, Person p2
+            WHERE MATCH(p2-(e)->p1) AND p1.name = ?
+            UNION SELECT p2.name, 'ConflictWith'
+            FROM Person p1, ConflictWith e, Person p2
+            WHERE MATCH(p2-(e)->p1) AND p1.name = ?
+            UNION SELECT p2.name, 'CooperatesWith'
+            FROM Person p1, CooperatesWith e, Person p2
+            WHERE MATCH(p2-(e)->p1) AND p1.name = ?
+            UNION SELECT p2.name, 'CommunicatesWith'
+            FROM Person p1, CommunicatesWith e, Person p2
+            WHERE MATCH(p2-(e)->p1) AND p1.name = ?
+
+            -- CaseNode -> Person (ReportedBy)
+            UNION SELECT c.name, 'ReportedBy'
+            FROM Person p1, ReportedBy e, CaseNode c
+            WHERE MATCH(c-(e)->p1) AND p1.name = ?
+
+            -- Item -> Person (TransferredTo)
+            UNION SELECT i.name, 'TransferredTo'
+            FROM Person p1, TransferredTo e, Item i
+            WHERE MATCH(i-(e)->p1) AND p1.name = ?
+        )
+        SELECT related_name, edge_name
+        FROM RelatedCTE
+        WHERE related_name != ?
+    """, [person_name] * 23)
+
+    related = {}
+    for row in cursor.fetchall():
+        name, edge = row
+        if name not in related:
+            related[name] = []
+        related[name].append(edge)
+    return related
+
+
 def find_common_related_entities(cursor, name1, name2):
-    """查找同时与name1和name2都相关联的实体"""
+    """查找同时与name1和name2都相关联的实体（使用 MATCH 图查询）"""
     try:
-        node1_id = get_node_graph_id(cursor, name1)
-        node2_id = get_node_graph_id(cursor, name2)
-
-        if not node1_id:
-            return f"未能找到实体 '{name1}' 的信息"
-        if not node2_id:
-            return f"未能找到实体 '{name2}' 的信息"
-
-        edge_tables = [
-            "WorksAt", "SubordinateOf", "Investigates", "SuspectOf",
-            "PerpetratorOf", "VictimOf", "LocatedIn", "Owns", "Found",
-            "TransferredTo", "Witness", "RelatedTo", "ConflictWith",
-            "CooperatesWith", "ReportedBy", "ConnectedTo", "OccursAt",
-            "EvidenceOf", "CoversUp", "CommunicatesWith"
-        ]
-
-        related_to_1 = {}
-        for table in edge_tables:
-            cursor.execute(f"""
-                SELECT $to_id FROM {table} WHERE STRING_ESCAPE($from_id, 'json') = STRING_ESCAPE(?, 'json')
-            """, (node1_id,))
-            for row in cursor.fetchall():
-                target_name = get_node_name_from_graph_id(cursor, str(row[0]))
-                if target_name and target_name != name1:
-                    if target_name not in related_to_1:
-                        related_to_1[target_name] = []
-                    related_to_1[target_name].append(f"{name1}{table}")
-
-            cursor.execute(f"""
-                SELECT $from_id FROM {table} WHERE STRING_ESCAPE($to_id, 'json') = STRING_ESCAPE(?, 'json')
-            """, (node1_id,))
-            for row in cursor.fetchall():
-                source_name = get_node_name_from_graph_id(cursor, str(row[0]))
-                if source_name and source_name != name1:
-                    if source_name not in related_to_1:
-                        related_to_1[source_name] = []
-                    related_to_1[source_name].append(f"{name1}{table}")
-
-        related_to_2 = {}
-        for table in edge_tables:
-            cursor.execute(f"""
-                SELECT $to_id FROM {table} WHERE STRING_ESCAPE($from_id, 'json') = STRING_ESCAPE(?, 'json')
-            """, (node2_id,))
-            for row in cursor.fetchall():
-                target_name = get_node_name_from_graph_id(cursor, str(row[0]))
-                if target_name and target_name != name2:
-                    if target_name not in related_to_2:
-                        related_to_2[target_name] = []
-                    related_to_2[target_name].append(f"{name2}{table}")
-
-            cursor.execute(f"""
-                SELECT $from_id FROM {table} WHERE STRING_ESCAPE($to_id, 'json') = STRING_ESCAPE(?, 'json')
-            """, (node2_id,))
-            for row in cursor.fetchall():
-                source_name = get_node_name_from_graph_id(cursor, str(row[0]))
-                if source_name and source_name != name2:
-                    if source_name not in related_to_2:
-                        related_to_2[source_name] = []
-                    related_to_2[source_name].append(f"{name2}{table}")
+        related_to_1 = _find_related_via_match(cursor, name1)
+        related_to_2 = _find_related_via_match(cursor, name2)
 
         common = set(related_to_1.keys()) & set(related_to_2.keys())
 
@@ -1467,24 +1580,35 @@ def find_path_between_nodes(cursor, name1, name2):
 
 
 def find_common_entities(cursor):
-    """查找出现在多个案件中的人物"""
+    """查找出现在多个案件中的人物（使用 MATCH 图查询）"""
     try:
         cursor.execute("""
-            SELECT p.name, COUNT(DISTINCT COALESCE(c1.name, c2.name, c3.name, c4.name, c5.name)) as case_count
-            FROM Person p
-            LEFT JOIN SuspectOf so ON p.$node_id = so.$from_id
-            LEFT JOIN CaseNode c1 ON so.$to_id = c1.$node_id
-            LEFT JOIN VictimOf vo ON p.$node_id = vo.$from_id
-            LEFT JOIN CaseNode c2 ON vo.$to_id = c2.$node_id
-            LEFT JOIN Investigates inv ON p.$node_id = inv.$from_id
-            LEFT JOIN CaseNode c3 ON inv.$to_id = c3.$node_id
-            LEFT JOIN PerpetratorOf po ON p.$node_id = po.$from_id
-            LEFT JOIN CaseNode c4 ON po.$to_id = c4.$node_id
-            LEFT JOIN Witness w ON p.$node_id = w.$from_id
-            LEFT JOIN CaseNode c5 ON w.$to_id = c5.$node_id
-            GROUP BY p.name
-            HAVING COUNT(DISTINCT COALESCE(c1.name, c2.name, c3.name, c4.name, c5.name)) > 1
-            ORDER BY COUNT(DISTINCT COALESCE(c1.name, c2.name, c3.name, c4.name, c5.name)) DESC
+            WITH PersonCaseCTE AS (
+                SELECT p.name AS person_name, c.name AS case_name
+                FROM Person p, SuspectOf so, CaseNode c
+                WHERE MATCH(p-(so)->c)
+                UNION
+                SELECT p.name, c.name
+                FROM Person p, VictimOf vo, CaseNode c
+                WHERE MATCH(p-(vo)->c)
+                UNION
+                SELECT p.name, c.name
+                FROM Person p, PerpetratorOf po, CaseNode c
+                WHERE MATCH(p-(po)->c)
+                UNION
+                SELECT p.name, c.name
+                FROM Person p, Witness w, CaseNode c
+                WHERE MATCH(p-(w)->c)
+                UNION
+                SELECT p.name, c.name
+                FROM Person p, Investigates inv, CaseNode c
+                WHERE MATCH(p-(inv)->c)
+            )
+            SELECT person_name, COUNT(DISTINCT case_name) AS case_count
+            FROM PersonCaseCTE
+            GROUP BY person_name
+            HAVING COUNT(DISTINCT case_name) > 1
+            ORDER BY COUNT(DISTINCT case_name) DESC
         """)
 
         results = []
