@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     backend_port: int = int(os.getenv("BACKEND_PORT", "8798"))
 
     # 分块配置
-    chunk_size: int = int(os.getenv("CHUNK_SIZE", "1000"))
-    chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", "200"))
+    chunk_size: int = int(os.getenv("CHUNK_SIZE", "500"))
+    chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", "100"))
 
     # Embedding 配置
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")

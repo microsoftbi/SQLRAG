@@ -36,7 +36,10 @@
       "Bash(cmd //c \"where python\")",
       "WebSearch",
       "WebFetch(domain:devblogs.microsoft.com)",
-      "WebFetch(domain:www.mssqltips.com)"
+      "WebFetch(domain:www.mssqltips.com)",
+      "Bash(python -)",
+      "Bash(py -)",
+      "Bash(py -m py_compile c:/Users/TEMP/Documents/GitHub/SQLRAG/backend/main.py c:/Users/TEMP/Documents/GitHub/SQLRAG/backend/API_Vector.py c:/Users/TEMP/Documents/GitHub/SQLRAG/backend/API_Graph.py)"
     ]
   }
 }

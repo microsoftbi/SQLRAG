@@ -12,7 +12,6 @@
                   <el-option label="全部知识库" :value="null" />
                   <el-option v-for="kb in knowledgeBases" :key="kb.KnowledgeBaseId" :label="kb.Name" :value="kb.KnowledgeBaseId" />
                 </el-select>
-                <el-button type="primary" size="small" @click="showAddDialog = true">添加文档</el-button>
               </div>
             </div>
           </template>
@@ -396,8 +395,8 @@ const knowledgeBases = ref([])
 const selectedKB = ref(null)
 const uploadKB = ref(null)
 const chunkMethodTab = ref('fixed')
-const uploadChunkSize = ref(1000)
-const uploadChunkOverlap = ref(200)
+const uploadChunkSize = ref(500)
+const uploadChunkOverlap = ref(100)
 const semanticDocId = ref(null)
 const semanticLoading = ref(false)
 const semanticResult = ref(null)
@@ -422,8 +421,8 @@ const previewLoading = ref(false)        // 分块预览加载中
 const fixedCommitting = ref(false)       // 固定分块入库中
 
 const config = ref({
-  chunk_size: 1000,
-  chunk_overlap: 200,
+  chunk_size: 500,
+  chunk_overlap: 100,
   embedding_model: 'quentinz/bge-large-zh-v1.5:latest',
 })
 const configSaving = ref(false)
