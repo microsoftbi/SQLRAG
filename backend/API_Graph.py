@@ -96,6 +96,57 @@ def call_llm_generate_sql(question: str, schema: str) -> str:
         raise
 
 
+def get_fix_prompt_template():
+    """从prompts目录加载GraphDB SQL fix prompt模板"""
+    prompt_path = os.path.join(os.path.dirname(__file__), "prompts", "graph_sql_fix.md")
+    try:
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        print(f"Error reading fix prompt template: {e}")
+        return ""
+
+
+def call_llm_fix_sql(question: str, failed_sql: str, error: str, schema: str) -> str:
+    """调用大模型修正SQL查询"""
+    try:
+        from langchain_deepseek import ChatDeepSeek
+        from langchain_core.messages import HumanMessage
+        from config import settings
+
+        # 配置API
+        api_key = settings.llm_api_key
+        if not api_key:
+            raise Exception("LLM_API_KEY not set in .env file")
+
+        llm = ChatDeepSeek(
+            model=settings.llm_model,
+            api_key=api_key,
+            base_url=settings.llm_base_url,
+            temperature=0,
+            max_tokens=5000
+        )
+
+        # 从外部md文件加载fix prompt模板并注入参数
+        template = get_fix_prompt_template()
+        if not template:
+            raise Exception("Failed to load prompt template from backend/prompts/graph_sql_fix.md")
+        prompt = (template.replace("{schema}", schema)
+                         .replace("{question}", question)
+                         .replace("{failed_sql}", failed_sql)
+                         .replace("{error}", error))
+
+        messages = [HumanMessage(content=prompt)]
+        response = llm.invoke(messages)
+        sql = response.content
+        return extract_sql_from_response(sql)
+    except ImportError:
+        raise Exception("langchain_deepseek library not installed, please install: pip install langchain-deepseek langchain-core")
+    except Exception as e:
+        print(f"Error calling LLM fix: {e}")
+        raise
+
+
 def execute_sql_and_format_result(cursor, sql: str) -> str:
     """执行SQL并格式化结果"""
     try:
@@ -276,16 +327,31 @@ async def graph_qa(data: Dict[str, Any], conn=Depends(get_graph_db_connection)):
         cursor = conn.cursor()
         
         if use_llm:
-            # 使用LLM生成SQL
             schema = get_schema_content()
-            sql = call_llm_generate_sql(question, schema)
 
-            # 记录LLM交互日志
+            # 最多重试 MAX_RETRIES 次修正
+            MAX_RETRIES = 2
+            sql = call_llm_generate_sql(question, schema)
             log_llm_interaction(question, sql)
 
-            # 执行SQL并获取结果
-            result = execute_sql_and_format_result(cursor, sql)
-            
+            for attempt in range(MAX_RETRIES + 1):
+                if attempt > 0:
+                    # 修正模式：将失败SQL和错误信息送回LLM
+                    sql = call_llm_fix_sql(question, old_sql, error_msg, schema)
+                    log_llm_interaction(question, sql)
+
+                result = execute_sql_and_format_result(cursor, sql)
+
+                # 检测是否出错
+                if not result.startswith("执行SQL时出错"):
+                    break
+
+                error_msg = result
+                old_sql = sql
+                logging.warning(
+                    f"SQL执行失败，第{attempt+1}次修正尝试 (question={question[:50]})"
+                )
+
             return {
                 "answer": result,
                 "generated_sql": sql
@@ -323,48 +389,48 @@ def legacy_graph_qa(cursor, question: str) -> dict:
             node_names.append(name)
 
     if "哪些人物" in question and "案件" in question and ("多个" in question or "同时" in question):
-        result = find_common_entities(cursor)
-        return {"answer": result}
+        result, generated_sql = find_common_entities(cursor)
+        return {"answer": result, "generated_sql": generated_sql}
 
     if not node_names:
         return {"answer": "未能识别问题中的实体，请尝试提及具体的人物、案件、地点或组织名称"}
 
     if "同时" in question or ("认识" in question and "又" in question) or ("和" in question and "有关系" in question):
         if len(node_names) >= 2:
-            result = find_common_related_entities(cursor, node_names[0], node_names[1])
-            return {"answer": result}
+            result, generated_sql = find_common_related_entities(cursor, node_names[0], node_names[1])
+            return {"answer": result, "generated_sql": generated_sql}
         else:
             return {"answer": "请提供两个实体名称来查询它们之间共同关联的实体"}
 
     elif "关系" in question or "认识" in question or "联系" in question:
         if len(node_names) >= 2:
-            result = find_relationship_between_nodes(cursor, node_names[0], node_names[1])
-            return {"answer": result}
+            result, generated_sql = find_relationship_between_nodes(cursor, node_names[0], node_names[1])
+            return {"answer": result, "generated_sql": generated_sql}
         else:
             return {"answer": "请提供两个实体名称来查询它们之间的关系"}
 
     elif "涉及" in question or "关联" in question or "参与" in question:
         entity = node_names[0]
-        result = find_related_entities(cursor, entity)
-        return {"answer": result}
+        result, generated_sql = find_related_entities(cursor, entity)
+        return {"answer": result, "generated_sql": generated_sql}
 
     elif "路径" in question or "之间" in question:
         if len(node_names) >= 2:
-            result = find_path_between_nodes(cursor, node_names[0], node_names[1])
-            return {"answer": result}
+            result, generated_sql = find_path_between_nodes(cursor, node_names[0], node_names[1])
+            return {"answer": result, "generated_sql": generated_sql}
         else:
             return {"answer": "请提供两个实体名称来查询它们之间的路径"}
 
     elif "哪些" in question or "多个" in question:
-        result = find_common_entities(cursor)
-        return {"answer": result}
+        result, generated_sql = find_common_entities(cursor)
+        return {"answer": result, "generated_sql": generated_sql}
 
     else:
         return {"answer": f"已识别到实体: {', '.join(node_names)}\n\n由于问题较为复杂，建议使用以下方式提问：\n- 'A和B是什么关系？'\n- '某案件涉及哪些人物？'\n- '从A到B之间有哪些关联路径？'\n- '谁认识A，同时又和B有关系？'"}
 
 
 def find_relationship_between_nodes(cursor, name1, name2):
-    """查找两个节点之间的直接关系（使用 MATCH 图查询）"""
+    """查找两个节点之间的直接关系（使用 MATCH 图查询），返回 (answer_text, sql_pattern)"""
     try:
         # Person -> Person 边表
         person_edge_tables = [
@@ -392,36 +458,42 @@ def find_relationship_between_nodes(cursor, name1, name2):
             if cursor.fetchone():
                 relationships.append(f"{name2} ->({edge_table})-> {name1}")
 
+        # 生成一个代表性的SQL示例供显示
+        sql_pattern = (
+            f"MATCH 图查询 (Person → Person 边表: {', '.join(person_edge_tables)})\n"
+            f"示例: SELECT 1 FROM Person p1, [EdgeTable] e, Person p2\n"
+            f"       WHERE MATCH(p1-(e)->p2) AND p1.name = '{name1}' AND p2.name = '{name2}'"
+        )
+
         if relationships:
-            return f"{name1} 和 {name2} 之间的关系：\n" + "\n".join(relationships)
+            return f"{name1} 和 {name2} 之间的关系：\n" + "\n".join(relationships), sql_pattern
         else:
-            return f"{name1} 和 {name2} 之间没有直接关系，可能存在间接关联"
+            return f"{name1} 和 {name2} 之间没有直接关系，可能存在间接关联", sql_pattern
 
     except Exception as e:
-        return f"查询关系时出错: {str(e)}"
+        return f"查询关系时出错: {str(e)}", ""
 
 
 def find_related_entities(cursor, entity_name):
-    """查找与某个实体相关联的所有实体（使用 MATCH 图查询）"""
+    """查找与某个实体相关联的所有实体（使用 MATCH 图查询），返回 (answer_text, sql_string)"""
     try:
-        related = _find_related_via_match(cursor, entity_name)
+        related, sql = _find_related_via_match(cursor, entity_name)
 
         if related:
             result = f"与 '{entity_name}' 相关联的实体：\n"
             for name, rels in related.items():
                 result += f"- {name}: {', '.join(f'({r})' for r in rels)}\n"
-            return result
+            return result, sql
         else:
-            return f"没有找到与 '{entity_name}' 相关联的实体"
+            return f"没有找到与 '{entity_name}' 相关联的实体", sql
 
     except Exception as e:
-        return f"查询关联实体时出错: {str(e)}"
+        return f"查询关联实体时出错: {str(e)}", ""
 
 
 def _find_related_via_match(cursor, person_name):
-    """使用 MATCH 查询指定人物的所有关联实体（返回 {实体名: [边名]}）"""
-    # 23 个 ? 占位符，全部传 person_name
-    cursor.execute("""
+    """使用 MATCH 查询指定人物的所有关联实体（返回 (dict: {实体名: [边名]}, sql_string)）"""
+    sql = """
         WITH RelatedCTE AS (
             -- ===== 出向边 (Person -> 其他节点) =====
 
@@ -514,7 +586,8 @@ def _find_related_via_match(cursor, person_name):
         SELECT related_name, edge_name
         FROM RelatedCTE
         WHERE related_name != ?
-    """, [person_name] * 23)
+    """
+    cursor.execute(sql, [person_name] * 23)
 
     related = {}
     for row in cursor.fetchall():
@@ -522,14 +595,14 @@ def _find_related_via_match(cursor, person_name):
         if name not in related:
             related[name] = []
         related[name].append(edge)
-    return related
+    return related, sql
 
 
 def find_common_related_entities(cursor, name1, name2):
-    """查找同时与name1和name2都相关联的实体（使用 MATCH 图查询）"""
+    """查找同时与name1和name2都相关联的实体（使用 MATCH 图查询），返回 (answer_text, sql_string)"""
     try:
-        related_to_1 = _find_related_via_match(cursor, name1)
-        related_to_2 = _find_related_via_match(cursor, name2)
+        related_to_1, sql1 = _find_related_via_match(cursor, name1)
+        related_to_2, _ = _find_related_via_match(cursor, name2)
 
         common = set(related_to_1.keys()) & set(related_to_2.keys())
 
@@ -541,62 +614,63 @@ def find_common_related_entities(cursor, name1, name2):
                 result += f"- {entity}:\n"
                 result += f"  与{name1}的关系: {', '.join(rels_1)}\n"
                 result += f"  与{name2}的关系: {', '.join(rels_2)}\n"
-            return result
+            return result, sql1
         else:
-            return f"没有找到同时与 '{name1}' 和 '{name2}' 都有关联的实体"
+            return f"没有找到同时与 '{name1}' 和 '{name2}' 都有关联的实体", sql1
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return f"查询共同关联实体时出错: {str(e)}"
+        return f"查询共同关联实体时出错: {str(e)}", ""
 
 
 def find_path_between_nodes(cursor, name1, name2):
-    """查找两个节点之间的路径"""
+    """查找两个节点之间的路径，返回 (answer_text, sql_string)"""
     try:
         node1_id = get_node_graph_id(cursor, name1)
         node2_id = get_node_graph_id(cursor, name2)
 
         if not node1_id or not node2_id:
-            return f"未能找到实体 '{name1}' 或 '{name2}' 的信息"
+            return f"未能找到实体 '{name1}' 或 '{name2}' 的信息", ""
 
-        return f"从 '{name1}' 到 '{name2}' 的路径分析：\n\n由于当前系统限制，路径查询功能需要更复杂的图算法支持。建议使用可视化界面查看节点的关联关系。"
+        return f"从 '{name1}' 到 '{name2}' 的路径分析：\n\n由于当前系统限制，路径查询功能需要更复杂的图算法支持。建议使用可视化界面查看节点的关联关系。", ""
 
     except Exception as e:
-        return f"查询路径时出错: {str(e)}"
+        return f"查询路径时出错: {str(e)}", ""
 
 
 def find_common_entities(cursor):
-    """查找出现在多个案件中的人物（使用 MATCH 图查询）"""
+    """查找出现在多个案件中的人物（使用 MATCH 图查询），返回 (answer_text, sql_string)"""
+    sql = """
+        WITH PersonCaseCTE AS (
+            SELECT p.name AS person_name, c.name AS case_name
+            FROM Person p, SuspectOf so, CaseNode c
+            WHERE MATCH(p-(so)->c)
+            UNION
+            SELECT p.name, c.name
+            FROM Person p, VictimOf vo, CaseNode c
+            WHERE MATCH(p-(vo)->c)
+            UNION
+            SELECT p.name, c.name
+            FROM Person p, PerpetratorOf po, CaseNode c
+            WHERE MATCH(p-(po)->c)
+            UNION
+            SELECT p.name, c.name
+            FROM Person p, Witness w, CaseNode c
+            WHERE MATCH(p-(w)->c)
+            UNION
+            SELECT p.name, c.name
+            FROM Person p, Investigates inv, CaseNode c
+            WHERE MATCH(p-(inv)->c)
+        )
+        SELECT person_name, COUNT(DISTINCT case_name) AS case_count
+        FROM PersonCaseCTE
+        GROUP BY person_name
+        HAVING COUNT(DISTINCT case_name) > 1
+        ORDER BY COUNT(DISTINCT case_name) DESC
+    """
     try:
-        cursor.execute("""
-            WITH PersonCaseCTE AS (
-                SELECT p.name AS person_name, c.name AS case_name
-                FROM Person p, SuspectOf so, CaseNode c
-                WHERE MATCH(p-(so)->c)
-                UNION
-                SELECT p.name, c.name
-                FROM Person p, VictimOf vo, CaseNode c
-                WHERE MATCH(p-(vo)->c)
-                UNION
-                SELECT p.name, c.name
-                FROM Person p, PerpetratorOf po, CaseNode c
-                WHERE MATCH(p-(po)->c)
-                UNION
-                SELECT p.name, c.name
-                FROM Person p, Witness w, CaseNode c
-                WHERE MATCH(p-(w)->c)
-                UNION
-                SELECT p.name, c.name
-                FROM Person p, Investigates inv, CaseNode c
-                WHERE MATCH(p-(inv)->c)
-            )
-            SELECT person_name, COUNT(DISTINCT case_name) AS case_count
-            FROM PersonCaseCTE
-            GROUP BY person_name
-            HAVING COUNT(DISTINCT case_name) > 1
-            ORDER BY COUNT(DISTINCT case_name) DESC
-        """)
+        cursor.execute(sql)
 
         results = []
         for row in cursor.fetchall():
@@ -604,9 +678,9 @@ def find_common_entities(cursor):
                 results.append(f"{row[0]}: 涉及 {row[1]} 个案件")
 
         if results:
-            return "出现在多个案件中的人物：\n" + "\n".join(results)
+            return "出现在多个案件中的人物：\n" + "\n".join(results), sql
         else:
-            return "没有找到同时出现在多个案件中的人物"
+            return "没有找到同时出现在多个案件中的人物", sql
 
     except Exception as e:
         import traceback
