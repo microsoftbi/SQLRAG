@@ -43,58 +43,54 @@ def extract_sql_from_response(response: str) -> str:
     return response.strip()
 
 
+def get_prompt_template():
+    """从prompts目录加载GraphDB SQL generation prompt模板"""
+    prompt_path = os.path.join(os.path.dirname(__file__), "prompts", "graph_sql_generation.md")
+    try:
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        print(f"Error reading prompt template: {e}")
+        return ""
+
+
 def call_llm_generate_sql(question: str, schema: str) -> str:
     """调用大模型生成SQL查询"""
     try:
-        from openai import OpenAI
+        from langchain_deepseek import ChatDeepSeek
+        from langchain_core.messages import HumanMessage
         from config import settings
-        
+
         # 配置API
         api_key = settings.llm_api_key
         if not api_key:
             raise Exception("LLM_API_KEY not set in .env file")
 
         masked_key = api_key[:-10] + "**********" if len(api_key) > 10 else "**********"
-        logging.info(f"LLM API Key loaded: {masked_key}")
-        logging.info(f"LLM Base URL: {settings.llm_base_url}")
-        logging.info(f"LLM Model: {settings.llm_model}")
+        #logging.info(f"LLM API Key loaded: {masked_key}")
+        #logging.info(f"LLM Base URL: {settings.llm_base_url}")
+        #logging.info(f"LLM Model: {settings.llm_model}")
 
-        client = OpenAI(
-            api_key=api_key,
-            base_url=settings.llm_base_url
-        )
-        
-        prompt = f"""你是一个SQL Server图数据库查询专家。请根据以下GraphDB Schema和用户问题，生成一个使用CTE + MATCH子句的SQL Server图查询语句。
-
-Schema：
-{schema}
-
-用户问题：
-{question}
-
-要求：
-1. 使用CTE（WITH子句）和MATCH子句进行图查询
-2. MATCH子句的语法是：MATCH(node1-(edge)->node2)
-3. 查询结果应该以易于理解的方式返回
-4. 只返回SQL语句，不要其他说明
-5. 使用STRING_AGG函数来聚合多个结果
-6. 如果涉及多个关系类型，请使用UNION ALL在CTE中组合
-
-只返回SQL语句，不要生成其它任何跟SQL语句无关的内容："""
-
-        response = client.chat.completions.create(
+        llm = ChatDeepSeek(
             model=settings.llm_model,
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=2000
+            api_key=api_key,
+            base_url=settings.llm_base_url,
+            temperature=0,
+            max_tokens=5000
         )
-        
-        sql = response.choices[0].message.content
+
+        # 从外部md文件加载prompt模板并注入参数
+        template = get_prompt_template()
+        if not template:
+            raise Exception("Failed to load prompt template from backend/prompts/graph_sql_generation.md")
+        prompt = template.replace("{schema}", schema).replace("{question}", question)
+
+        messages = [HumanMessage(content=prompt)]
+        response = llm.invoke(messages)
+        sql = response.content
         return extract_sql_from_response(sql)
     except ImportError:
-        raise Exception("openai library not installed, please install: pip install openai")
+        raise Exception("langchain_deepseek library not installed, please install: pip install langchain-deepseek langchain-core")
     except Exception as e:
         print(f"Error calling LLM: {e}")
         raise

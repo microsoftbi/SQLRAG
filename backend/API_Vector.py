@@ -434,6 +434,38 @@ async def preview_document_chunks(document_id: int, data: Dict[str, Any], conn=D
     return {"chunks": chunks, "total_chunks": len(chunks)}
 
 
+def get_semantic_chunk_prompt():
+    """从prompts目录加载semantic chunk prompt模板，返回 (system_prompt, user_prompt)"""
+    prompt_path = os.path.join(os.path.dirname(__file__), "prompts", "vector_semantic_chunk.md")
+    try:
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            raw = f.read()
+
+        system_prompt = ""
+        user_prompt = ""
+        current_section = None
+        for line in raw.split("\n"):
+            if line.strip() == "## System Prompt":
+                current_section = "system"
+                continue
+            elif line.strip() == "## User Prompt":
+                current_section = "user"
+                continue
+            elif line.startswith("## "):
+                current_section = None
+                continue
+
+            if current_section == "system":
+                system_prompt += line + "\n"
+            elif current_section == "user":
+                user_prompt += line + "\n"
+
+        return system_prompt.strip(), user_prompt.strip()
+    except Exception as e:
+        print(f"Error reading semantic chunk prompt template: {e}")
+        return "", ""
+
+
 @router.post("/documents/{document_id}/semantic-chunk")
 async def semantic_chunk_document(document_id: int, conn=Depends(get_vector_db_connection)):
     """调用大模型对文档进行语义分块"""
@@ -458,25 +490,17 @@ async def semantic_chunk_document(document_id: int, conn=Depends(get_vector_db_c
             base_url=settings.llm_base_url
         )
 
-        prompt = f"""你是一个文本分段专家。请将以下文章按照语义进行合理的分段。
-
-要求：
-1. 根据文章的自然段落和语义完整性进行分段
-2. 每个分段应该是一个完整的语义单元
-3. 保持原文内容不变，不要修改、删除或添加任何文字
-4. 返回一个 JSON 数组，每个元素是一个分段的文本
-
-输出格式（仅返回 JSON，不要其他任何内容）：
-{{"chunks": ["第一段内容...", "第二段内容...", ...]}}
-
-文章内容：
-{content}"""
+        # 从外部md文件加载prompt模板
+        system_prompt, user_template = get_semantic_chunk_prompt()
+        if not system_prompt or not user_template:
+            raise Exception("Failed to load prompt template from backend/prompts/vector_semantic_chunk.md")
+        user_prompt = user_template.replace("{content}", content)
 
         response = client.chat.completions.create(
             model=settings.llm_model,
             messages=[
-                {"role": "system", "content": "你是一个文本分段专家，擅长将长文本按语义分割成合理的段落。"},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
             ],
             temperature=0.1,
             max_tokens=8192,
@@ -900,6 +924,17 @@ async def vector_qa(data: Dict[str, Any], conn=Depends(get_vector_db_connection)
         return {"answer": f"抱歉，处理问题时发生错误: {str(e)}", "sources": []}
 
 
+def get_vector_qa_prompt():
+    """从prompts目录加载Vector QA answer prompt模板"""
+    prompt_path = os.path.join(os.path.dirname(__file__), "prompts", "vector_qa_answer.md")
+    try:
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        print(f"Error reading vector QA prompt template: {e}")
+        return ""
+
+
 def generate_answer_with_sources(question: str, sources: list) -> str:
     """基于检索到的内容使用LLM生成回答"""
     try:
@@ -921,24 +956,20 @@ def generate_answer_with_sources(question: str, sources: list) -> str:
             base_url=settings.llm_base_url
         )
         
+        # 从外部md文件加载prompt模板
+        template = get_vector_qa_prompt()
+        if not template:
+            raise Exception("Failed to load prompt template from backend/prompts/vector_qa_answer.md")
+
         # 构建上下文
         context_text = ""
         for idx, source in enumerate(sources):
             context_text += f"\n【文档 {idx + 1}】\n"
             context_text += f"标题: {source.get('Title', '无标题')}\n"
             context_text += f"内容: {source.get('ChunkText', '')[:1000]}...\n"
-        
-        prompt = f"""你是一个智能问答助手。请根据以下文档内容回答用户的问题。
 
-参考文档:
-{context_text}
+        prompt = template.replace("{context_text}", context_text).replace("{question}", question)
 
-用户问题: {question}
-
-请根据参考文档内容回答问题。如果参考文档中没有相关信息，请如实说明。
-请用简洁明了的语言回答。
-"""
-        
         response = client.chat.completions.create(
             model=settings.llm_model,
             messages=[
