@@ -76,7 +76,8 @@ def call_llm_generate_sql(question: str, schema: str) -> str:
             api_key=api_key,
             base_url=settings.llm_base_url,
             temperature=0,
-            max_tokens=5000
+            max_tokens=5000,
+            extra_body={"thinking": {"type": "disabled"}}
         )
 
         # 从外部md文件加载prompt模板并注入参数

@@ -6,6 +6,7 @@ import logging
 from config import settings
 from API_Vector import router as vector_router
 from API_Graph import router as graph_router
+from API_Debug import router as debug_router
 
 # 获取当前脚本所在目录，确保日志文件在 backend 目录下
 _log_dir = os.path.dirname(os.path.abspath(__file__))
@@ -42,6 +43,7 @@ app.add_middleware(
 
 app.include_router(vector_router)
 app.include_router(graph_router)
+app.include_router(debug_router)
 
 
 @app.get("/")

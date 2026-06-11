@@ -14,6 +14,10 @@
             <el-icon><document /></el-icon>
             <span>VectorDB</span>
           </el-menu-item>
+          <el-menu-item index="/debug">
+            <el-icon><tools /></el-icon>
+            <span>Debug</span>
+          </el-menu-item>
         </el-menu>
       </el-aside>
       <el-main>
@@ -24,7 +28,7 @@
 </template>
 
 <script setup>
-import { Document, DataLine } from '@element-plus/icons-vue'
+import { Document, DataLine, Tools } from '@element-plus/icons-vue'
 </script>
 
 <style>

@@ -197,10 +197,11 @@ def get_embedding(text: str) -> List[float]:
             except Exception as e:
                 error_message = str(e)
                 last_error = e
-                if "input length exceeds the context length" not in error_message:
+                # 截断重试条件：输入过长 或 模型返回 NaN
+                if "input length exceeds the context length" not in error_message and "NaN" not in error_message:
                     raise
                 logging.warning(
-                    f"Embedding input length {len(input_text)} chars still exceeds context length"
+                    f"Embedding failed ({len(input_text)} chars), retrying with shorter text. Error: {error_message}"
                 )
 
         raise last_error
@@ -895,19 +896,6 @@ async def vector_qa(data: Dict[str, Any], conn=Depends(get_vector_db_connection)
 
         columns = [column[0] for column in cursor.description]
         sources = [dict(zip(columns, row)) for row in cursor.fetchall()]
-
-        # 如果向量检索没有命中，用关键词搜索文档标题作为备选
-        if not sources:
-            cursor.execute("""
-                SELECT TOP 3 c.ChunkId, c.DocumentId, c.ChunkIndex, c.ChunkText, d.Title
-                FROM Documents d
-                JOIN TextChunks c ON d.DocumentId = c.DocumentId
-                WHERE d.IsDeleted = 0 AND ISNULL(c.IsDeleted, 0) = 0
-                AND (d.Title LIKE ? OR d.Source LIKE ?)
-                ORDER BY c.DocumentId, c.ChunkIndex
-            """, (f"%{question}%", f"%{question}%"))
-            columns = [column[0] for column in cursor.description]
-            sources = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
         # 使用LLM基于检索到的内容回答问题
         answer = generate_answer_with_sources(question, sources)
